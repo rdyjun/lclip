@@ -127,7 +127,7 @@ function exportVideo(project, outputPath) {
       const escaped  = clip.text.replace(/'/g, "\\'").replace(/:/g, '\\:').replace(/\n/g, '\\n');
       const colorHex = rgbToFFmpegColor(clip.color || '#ffffff');
       const fontSize = clip.fontSize || 48;
-      const fontFile = getFontPath(clip.bold);
+      const fontFile = getFontPath(clip.bold, clip.fontFamily);
       filterParts.push(
         `${subtitleBase}drawtext=fontfile='${fontFile}':text='${escaped}'` +
         `:fontsize=${fontSize}:fontcolor=${colorHex}:x=(w-text_w)/2:y=${clip.y || 100}` +
@@ -212,30 +212,55 @@ function rgbToFFmpegColor(hex) {
   return '0x' + hex.slice(1);
 }
 
-function getFontPath(bold) {
-  const boldCandidates = [
-    '/usr/share/fonts/nanum/NanumGothic-Bold.ttf',           // Docker Alpine (Korean)
-    'C\\:/Windows/Fonts/malgunbd.ttf',                       // Windows Malgun Gothic Bold
-    'C\\:/Windows/Fonts/arialbd.ttf',                        // Windows Arial Bold
-    '/usr/share/fonts/truetype/nanum/NanumGothicBold.ttf',   // Ubuntu/Debian
+// Maps CSS fontFamily values (used in the editor UI) to TTF file names
+// installed in /usr/share/fonts/korean/ inside the Docker image.
+const FONT_DIR = '/usr/share/fonts/korean';
+const FONT_MAP = {
+  'Noto Sans KR, sans-serif':     { r: 'NotoSansKR-Regular.ttf',     b: 'NotoSansKR-Bold.ttf' },
+  'Nanum Gothic, sans-serif':     { r: 'NanumGothic-Regular.ttf',    b: 'NanumGothic-Bold.ttf' },
+  'Nanum Myeongjo, serif':        { r: 'NanumMyeongjo-Regular.ttf',  b: 'NanumMyeongjo-Bold.ttf' },
+  'Gowun Dodum, sans-serif':      { r: 'GowunDodum-Regular.ttf',     b: null },
+  'Gowun Batang, serif':          { r: 'GowunBatang-Regular.ttf',    b: null },
+  'Black Han Sans, sans-serif':   { r: 'BlackHanSans-Regular.ttf',   b: null },
+  'Do Hyeon, sans-serif':         { r: 'DoHyeon-Regular.ttf',        b: null },
+  'IBM Plex Sans KR, sans-serif': { r: 'IBMPlexSansKR-Regular.ttf', b: 'IBMPlexSansKR-Bold.ttf' },
+  'Jua, sans-serif':              { r: 'Jua-Regular.ttf',            b: null },
+};
+
+function getFontPath(bold, fontFamily) {
+  // 1. Try the clip's selected font first
+  if (fontFamily && FONT_MAP[fontFamily]) {
+    const entry   = FONT_MAP[fontFamily];
+    const names   = bold && entry.b ? [entry.b, entry.r] : [entry.r];
+    for (const name of names) {
+      if (!name) continue;
+      const p = path.join(FONT_DIR, name);
+      if (fs.existsSync(p)) return p;
+    }
+  }
+
+  // 2. Generic fallback candidates (Docker → Windows → Linux → macOS)
+  const boldFallbacks = [
+    path.join(FONT_DIR, 'NanumGothic-Bold.ttf'),
+    'C\\:/Windows/Fonts/malgunbd.ttf',
+    'C\\:/Windows/Fonts/arialbd.ttf',
+    '/usr/share/fonts/truetype/nanum/NanumGothicBold.ttf',
     '/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf',
-    '/System/Library/Fonts/Helvetica.ttc'
   ];
-  const regularCandidates = [
-    '/usr/share/fonts/nanum/NanumGothic-Regular.ttf',        // Docker Alpine (Korean)
-    'C\\:/Windows/Fonts/malgun.ttf',                         // Windows Malgun Gothic
-    'C\\:/Windows/Fonts/arial.ttf',                          // Windows Arial
-    '/usr/share/fonts/truetype/nanum/NanumGothic.ttf',       // Ubuntu/Debian
+  const regularFallbacks = [
+    path.join(FONT_DIR, 'NanumGothic-Regular.ttf'),
+    'C\\:/Windows/Fonts/malgun.ttf',
+    'C\\:/Windows/Fonts/arial.ttf',
+    '/usr/share/fonts/truetype/nanum/NanumGothic.ttf',
     '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
-    '/System/Library/Fonts/Helvetica.ttc'
+    '/System/Library/Fonts/Helvetica.ttc',
   ];
-  const candidates = bold ? [...boldCandidates, ...regularCandidates] : regularCandidates;
+  const candidates = bold ? [...boldFallbacks, ...regularFallbacks] : regularFallbacks;
   for (const f of candidates) {
-    const real = f.replace('C\\:/', 'C:/');
+    const real = f.startsWith('C\\:/') ? f.replace('C\\:/', 'C:/') : f;
     if (fs.existsSync(real)) return f;
   }
-  // Last resort: return first candidate and let FFmpeg fail with a clear error
-  return candidates[0];
+  return candidates[0]; // let FFmpeg report the missing file clearly
 }
 
 module.exports = { getVideoInfo, exportVideo };

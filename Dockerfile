@@ -1,12 +1,25 @@
 FROM node:20-alpine
 
 # System FFmpeg + fontconfig + Korean fonts for subtitle drawtext
+# Same fonts offered in the editor UI — TTF versions downloaded from Google Fonts
 RUN apk add --no-cache ffmpeg fontconfig curl && \
-    mkdir -p /usr/share/fonts/nanum && \
-    curl -fsSL -o /usr/share/fonts/nanum/NanumGothic-Regular.ttf \
-      "https://github.com/google/fonts/raw/main/ofl/nanumgothic/NanumGothic-Regular.ttf" && \
-    curl -fsSL -o /usr/share/fonts/nanum/NanumGothic-Bold.ttf \
-      "https://github.com/google/fonts/raw/main/ofl/nanumgothic/NanumGothic-Bold.ttf" && \
+    F=/usr/share/fonts/korean && mkdir -p $F && \
+    B="https://github.com/google/fonts/raw/main/ofl" && \
+    # Required fallback — build fails if these are unavailable
+    curl -fsSL "$B/nanumgothic/NanumGothic-Regular.ttf"             -o $F/NanumGothic-Regular.ttf && \
+    curl -fsSL "$B/nanumgothic/NanumGothic-Bold.ttf"                -o $F/NanumGothic-Bold.ttf && \
+    # Optional — best-effort (|| true so build succeeds even if CDN hiccup)
+    curl -fsSL "$B/nanummyeongjo/NanumMyeongjo-Regular.ttf"         -o $F/NanumMyeongjo-Regular.ttf      || true && \
+    curl -fsSL "$B/nanummyeongjo/NanumMyeongjo-Bold.ttf"            -o $F/NanumMyeongjo-Bold.ttf         || true && \
+    curl -fsSL "$B/gowundodum/GowunDodum-Regular.ttf"               -o $F/GowunDodum-Regular.ttf         || true && \
+    curl -fsSL "$B/gowunbatang/GowunBatang-Regular.ttf"             -o $F/GowunBatang-Regular.ttf        || true && \
+    curl -fsSL "$B/blackhansans/BlackHanSans-Regular.ttf"           -o $F/BlackHanSans-Regular.ttf       || true && \
+    curl -fsSL "$B/dohyeon/DoHyeon-Regular.ttf"                     -o $F/DoHyeon-Regular.ttf            || true && \
+    curl -fsSL "$B/ibmplexsanskr/IBMPlexSansKR-Regular.ttf"        -o $F/IBMPlexSansKR-Regular.ttf      || true && \
+    curl -fsSL "$B/ibmplexsanskr/IBMPlexSansKR-SemiBold.ttf"       -o $F/IBMPlexSansKR-Bold.ttf         || true && \
+    curl -fsSL "$B/jua/Jua-Regular.ttf"                             -o $F/Jua-Regular.ttf                || true && \
+    curl -fsSL "$B/notosanskr/static/NotoSansKR-Regular.ttf"        -o $F/NotoSansKR-Regular.ttf         || true && \
+    curl -fsSL "$B/notosanskr/static/NotoSansKR-Bold.ttf"           -o $F/NotoSansKR-Bold.ttf            || true && \
     fc-cache -fv
 
 WORKDIR /app
