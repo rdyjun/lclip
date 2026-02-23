@@ -56,43 +56,53 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-  # ── 2. SSH into NAS and pull the new image ──────────────────────────────────
+  # ── 2. SSH into NAS and deploy ──────────────────────────────────────────────
   deploy:
     needs: build-and-push
     runs-on: ubuntu-latest
     if: github.ref == 'refs/heads/main'
 
-    # Expose secrets as env vars so we can check them in shell
     env:
       NAS_HOST:       ${{ secrets.NAS_HOST }}
       NAS_USER:       ${{ secrets.NAS_USER }}
       NAS_SSH_KEY:    ${{ secrets.NAS_SSH_KEY }}
       NAS_DEPLOY_DIR: ${{ secrets.NAS_DEPLOY_DIR }}
+      NAS_PORT:       ${{ secrets.NAS_PORT || '22' }}
 
     steps:
-      # Check whether NAS secrets are set; skip gracefully if not
       - name: Check NAS secrets
         id: check
         run: |
           if [ -z "$NAS_HOST" ] || [ -z "$NAS_USER" ] || [ -z "$NAS_SSH_KEY" ] || [ -z "$NAS_DEPLOY_DIR" ]; then
             echo "configured=false" >> "$GITHUB_OUTPUT"
             echo "::warning::NAS deploy secrets not configured — skipping SSH deploy."
-            echo "Add NAS_HOST / NAS_USER / NAS_SSH_KEY / NAS_DEPLOY_DIR to repository Secrets to enable auto-deploy."
+            echo "Add NAS_HOST / NAS_USER / NAS_SSH_KEY / NAS_DEPLOY_DIR to repository Secrets."
           else
             echo "configured=true" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Deploy to NAS via SSH
         if: steps.check.outputs.configured == 'true'
-        uses: appleboy/ssh-action@v1
-        with:
-          host:     ${{ secrets.NAS_HOST }}
-          username: ${{ secrets.NAS_USER }}
-          key:      ${{ secrets.NAS_SSH_KEY }}
-          port:     ${{ secrets.NAS_PORT || '22' }}
-          script: |
-            set -e
-            cd "${{ secrets.NAS_DEPLOY_DIR }}"
-            docker compose pull lclip
-            docker compose up -d --remove-orphans lclip
-            docker image prune -f
+        run: |
+          # Write private key to temp file
+          KEY_FILE=$(mktemp)
+          echo "$NAS_SSH_KEY" > "$KEY_FILE"
+          chmod 600 "$KEY_FILE"
+
+          # Collect NAS host key to avoid interactive prompt
+          mkdir -p ~/.ssh
+          ssh-keyscan -p "$NAS_PORT" -H "$NAS_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+          # Run deploy commands on NAS
+          ssh -i "$KEY_FILE" \
+              -p "$NAS_PORT" \
+              -o StrictHostKeyChecking=accept-new \
+              -o ConnectTimeout=30 \
+              "$NAS_USER@$NAS_HOST" \
+              "set -e
+               cd '$NAS_DEPLOY_DIR'
+               docker compose pull lclip
+               docker compose up -d --remove-orphans lclip
+               docker image prune -f"
+
+          rm -f "$KEY_FILE"
