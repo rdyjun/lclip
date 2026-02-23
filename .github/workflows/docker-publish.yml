@@ -86,17 +86,23 @@ jobs:
         run: |
           # ── SSH key setup ──────────────────────────────────────────────────
           KEY_FILE=$(mktemp)
-          echo "$NAS_SSH_KEY" > "$KEY_FILE"
+          printf '%s\n' "$NAS_SSH_KEY" > "$KEY_FILE"
           chmod 600 "$KEY_FILE"
 
           mkdir -p ~/.ssh
-          ssh-keyscan -p "$NAS_PORT" -H "$NAS_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+          echo "==> ssh-keyscan NAS host..."
+          ssh-keyscan -p "$NAS_PORT" -H "$NAS_HOST" >> ~/.ssh/known_hosts 2>&1 || true
 
-          SSH="ssh -i $KEY_FILE -p $NAS_PORT -o StrictHostKeyChecking=accept-new -o ConnectTimeout=30"
+          SSH="ssh -i $KEY_FILE -p $NAS_PORT -o StrictHostKeyChecking=accept-new -o ConnectTimeout=30 -o BatchMode=yes"
+
+          # ── Verify SSH connectivity ────────────────────────────────────────
+          echo "==> Testing SSH connection..."
+          $SSH "$NAS_USER@$NAS_HOST" "echo 'SSH OK'"
 
           # ── Pull new image & restart ───────────────────────────────────────
+          echo "==> Deploying..."
           $SSH "$NAS_USER@$NAS_HOST" "
-            set -e
+            set -ex
             cd \"$NAS_DEPLOY_DIR\"
             docker compose pull lclip
             docker compose up -d --remove-orphans lclip
@@ -104,3 +110,4 @@ jobs:
           "
 
           rm -f "$KEY_FILE"
+          echo "==> Deploy complete."
