@@ -7,7 +7,7 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}   # e.g. your-user/lclip
+  IMAGE_NAME: ${{ github.repository }}
 
 jobs:
   # ── 1. Build & push image to GHCR ──────────────────────────────────────────
@@ -16,9 +16,6 @@ jobs:
     permissions:
       contents: read
       packages: write
-
-    outputs:
-      image_tag: ${{ steps.meta.outputs.version }}
 
     steps:
       - name: Checkout
@@ -31,7 +28,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract Docker metadata (tags & labels)
+      - name: Extract Docker metadata
         id: meta
         uses: docker/metadata-action@v5
         with:
@@ -49,10 +46,10 @@ jobs:
         uses: docker/setup-buildx-action@v3
 
       - name: Build and push
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v6
         with:
           context: .
-          platforms: linux/amd64,linux/arm64   # covers x86 NAS and ARM NAS
+          platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
@@ -63,18 +60,39 @@ jobs:
   deploy:
     needs: build-and-push
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main'   # only deploy on main branch pushes
+    if: github.ref == 'refs/heads/main'
+
+    # Expose secrets as env vars so we can check them in shell
+    env:
+      NAS_HOST:       ${{ secrets.NAS_HOST }}
+      NAS_USER:       ${{ secrets.NAS_USER }}
+      NAS_SSH_KEY:    ${{ secrets.NAS_SSH_KEY }}
+      NAS_DEPLOY_DIR: ${{ secrets.NAS_DEPLOY_DIR }}
 
     steps:
+      # Check whether NAS secrets are set; skip gracefully if not
+      - name: Check NAS secrets
+        id: check
+        run: |
+          if [ -z "$NAS_HOST" ] || [ -z "$NAS_USER" ] || [ -z "$NAS_SSH_KEY" ] || [ -z "$NAS_DEPLOY_DIR" ]; then
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::NAS deploy secrets not configured — skipping SSH deploy."
+            echo "Add NAS_HOST / NAS_USER / NAS_SSH_KEY / NAS_DEPLOY_DIR to repository Secrets to enable auto-deploy."
+          else
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Deploy to NAS via SSH
+        if: steps.check.outputs.configured == 'true'
         uses: appleboy/ssh-action@v1
         with:
           host:     ${{ secrets.NAS_HOST }}
           username: ${{ secrets.NAS_USER }}
           key:      ${{ secrets.NAS_SSH_KEY }}
-          port:     ${{ secrets.NAS_PORT || 22 }}
+          port:     ${{ secrets.NAS_PORT || '22' }}
           script: |
-            cd ${{ secrets.NAS_DEPLOY_DIR }}
-            docker compose pull
-            docker compose up -d --remove-orphans
+            set -e
+            cd "${{ secrets.NAS_DEPLOY_DIR }}"
+            docker compose pull lclip
+            docker compose up -d --remove-orphans lclip
             docker image prune -f
