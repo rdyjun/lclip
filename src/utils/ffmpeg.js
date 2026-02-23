@@ -214,14 +214,18 @@ function rgbToFFmpegColor(hex) {
 
 function getFontPath(bold) {
   const boldCandidates = [
-    'C\\:/Windows/Fonts/malgunbd.ttf',     // Malgun Gothic Bold
-    'C\\:/Windows/Fonts/arialbd.ttf',      // Arial Bold
+    '/usr/share/fonts/nanum/NanumGothic-Bold.ttf',           // Docker Alpine (Korean)
+    'C\\:/Windows/Fonts/malgunbd.ttf',                       // Windows Malgun Gothic Bold
+    'C\\:/Windows/Fonts/arialbd.ttf',                        // Windows Arial Bold
+    '/usr/share/fonts/truetype/nanum/NanumGothicBold.ttf',   // Ubuntu/Debian
     '/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf',
     '/System/Library/Fonts/Helvetica.ttc'
   ];
   const regularCandidates = [
-    'C\\:/Windows/Fonts/malgun.ttf',
-    'C\\:/Windows/Fonts/arial.ttf',
+    '/usr/share/fonts/nanum/NanumGothic-Regular.ttf',        // Docker Alpine (Korean)
+    'C\\:/Windows/Fonts/malgun.ttf',                         // Windows Malgun Gothic
+    'C\\:/Windows/Fonts/arial.ttf',                          // Windows Arial
+    '/usr/share/fonts/truetype/nanum/NanumGothic.ttf',       // Ubuntu/Debian
     '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
     '/System/Library/Fonts/Helvetica.ttc'
   ];
@@ -230,7 +234,8 @@ function getFontPath(bold) {
     const real = f.replace('C\\:/', 'C:/');
     if (fs.existsSync(real)) return f;
   }
-  return regularCandidates[regularCandidates.length - 1];
+  // Last resort: return first candidate and let FFmpeg fail with a clear error
+  return candidates[0];
 }
 
 module.exports = { getVideoInfo, exportVideo };

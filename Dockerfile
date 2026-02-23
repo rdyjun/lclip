@@ -1,7 +1,13 @@
 FROM node:20-alpine
 
-# System FFmpeg — more reliable than ffmpeg-static on musl/Alpine
-RUN apk add --no-cache ffmpeg
+# System FFmpeg + fontconfig + Korean fonts for subtitle drawtext
+RUN apk add --no-cache ffmpeg fontconfig curl && \
+    mkdir -p /usr/share/fonts/nanum && \
+    curl -fsSL -o /usr/share/fonts/nanum/NanumGothic-Regular.ttf \
+      "https://github.com/google/fonts/raw/main/ofl/nanumgothic/NanumGothic-Regular.ttf" && \
+    curl -fsSL -o /usr/share/fonts/nanum/NanumGothic-Bold.ttf \
+      "https://github.com/google/fonts/raw/main/ofl/nanumgothic/NanumGothic-Bold.ttf" && \
+    fc-cache -fv
 
 WORKDIR /app
 
