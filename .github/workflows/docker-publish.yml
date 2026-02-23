@@ -98,7 +98,9 @@ jobs:
           $SSH "$NAS_USER@$NAS_HOST" "
             set -e
             cd \"$NAS_DEPLOY_DIR\"
-            sg docker -c \"docker compose pull lclip && docker compose up -d --remove-orphans lclip && docker image prune -f\"
+            docker compose pull lclip
+            docker compose up -d --remove-orphans lclip
+            docker image prune -f
           "
 
           rm -f "$KEY_FILE"
