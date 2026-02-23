@@ -12,7 +12,7 @@ const Timeline = (() => {
   let _isDragging = false; // suppresses render() during drag
   let rightClickInfo = null;
   let _zoomPivot = null;   // { timeAtMouse, mouseX } for mouse-centered zoom
-  const SNAP_PX  = 8;      // snap threshold in screen pixels
+  const SNAP_PX  = 12;     // snap threshold in screen pixels
 
   function init() {
     rulerCanvas = document.getElementById('timeline-ruler');
@@ -284,15 +284,21 @@ const Timeline = (() => {
     if (drag.type === 'move') {
       const dur      = drag.origEnd - drag.origStart;
       const rawStart = Math.max(0, drag.origStart + dt);
-      const edges    = getSnapEdges(drag.clipId);
-      const sStart   = snapToEdges(rawStart, edges);
-      const sEnd     = snapToEdges(rawStart + dur, edges);
-      const dStart   = Math.abs(sStart - rawStart);
-      const dEnd     = Math.abs(sEnd - (rawStart + dur));
+      const edges        = getSnapEdges(drag.clipId);
+      const sStart       = snapToEdges(rawStart, edges);
+      const sEnd         = snapToEdges(rawStart + dur, edges);
+      const dStart       = Math.abs(sStart - rawStart);
+      const dEnd         = Math.abs(sEnd - (rawStart + dur));
+      const snappedStart = dStart > 0;
+      const snappedEnd   = dEnd > 0;
       let newStart;
-      if (dStart > 0 || dEnd > 0) {
-        // Snap whichever edge is closer to a target
+      if (snappedStart && snappedEnd) {
+        // Both edges near a snap point — pick whichever is closer
         newStart = dStart <= dEnd ? Math.max(0, sStart) : Math.max(0, sEnd - dur);
+      } else if (snappedStart) {
+        newStart = Math.max(0, sStart);
+      } else if (snappedEnd) {
+        newStart = Math.max(0, sEnd - dur);
       } else {
         newStart = snapFrame(rawStart);
       }

@@ -115,6 +115,18 @@ const Properties = (() => {
     body.appendChild(posSection);
   }
 
+  const SUBTITLE_FONTS = [
+    { label: 'Noto Sans KR (기본)',  value: 'Noto Sans KR, sans-serif' },
+    { label: 'Nanum Gothic',         value: 'Nanum Gothic, sans-serif' },
+    { label: 'Nanum Myeongjo',       value: 'Nanum Myeongjo, serif' },
+    { label: 'Gowun Dodum',          value: 'Gowun Dodum, sans-serif' },
+    { label: 'Gowun Batang',         value: 'Gowun Batang, serif' },
+    { label: 'Black Han Sans',       value: 'Black Han Sans, sans-serif' },
+    { label: 'Do Hyeon',             value: 'Do Hyeon, sans-serif' },
+    { label: 'IBM Plex Sans KR',     value: 'IBM Plex Sans KR, sans-serif' },
+    { label: 'Jua',                  value: 'Jua, sans-serif' },
+  ];
+
   // ── Subtitle Properties ───────────────────────────────────────────────────────
   function renderSubtitleProps(layerId, clipId, clip) {
     const body = document.getElementById('properties-body');
@@ -157,6 +169,26 @@ const Properties = (() => {
 
     // Font
     const fontSection = makeSection('폰트');
+
+    const fontSelect = document.createElement('select');
+    fontSelect.className = 'prop-input';
+    const currentFont = clip.fontFamily || 'Noto Sans KR, sans-serif';
+    SUBTITLE_FONTS.forEach(f => {
+      const opt = document.createElement('option');
+      opt.value = f.value;
+      opt.textContent = f.label;
+      opt.style.fontFamily = f.value;
+      if (currentFont === f.value) opt.selected = true;
+      fontSelect.appendChild(opt);
+    });
+    fontSelect.style.fontFamily = currentFont;
+    fontSelect.addEventListener('change', () => {
+      fontSelect.style.fontFamily = fontSelect.value;
+      EditorState.updateClip(layerId, clipId, { fontFamily: fontSelect.value });
+      Player.renderFrame();
+    });
+    fontSection.appendChild(makeRow('폰트', fontSelect));
+
     fontSection.appendChild(makeRow('크기', makeNumberInput(clip.fontSize || 48, v => {
       EditorState.updateClip(layerId, clipId, { fontSize: parseInt(v) }); Player.renderFrame();
     })));
