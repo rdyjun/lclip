@@ -70,6 +70,10 @@ jobs:
       NAS_PORT:       ${{ secrets.NAS_PORT || '22' }}
 
     steps:
+      # docker-compose.yml을 NAS로 복사하기 위해 체크아웃 필요
+      - name: Checkout
+        uses: actions/checkout@v4
+
       - name: Check NAS secrets
         id: check
         run: |
@@ -81,28 +85,34 @@ jobs:
             echo "configured=true" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Deploy to NAS via SSH
+      - name: Deploy to NAS
         if: steps.check.outputs.configured == 'true'
         run: |
-          # Write private key to temp file
+          # ── SSH key setup ──────────────────────────────────────────────────
           KEY_FILE=$(mktemp)
           echo "$NAS_SSH_KEY" > "$KEY_FILE"
           chmod 600 "$KEY_FILE"
 
-          # Collect NAS host key to avoid interactive prompt
           mkdir -p ~/.ssh
           ssh-keyscan -p "$NAS_PORT" -H "$NAS_HOST" >> ~/.ssh/known_hosts 2>/dev/null
 
-          # Run deploy commands on NAS
-          ssh -i "$KEY_FILE" \
-              -p "$NAS_PORT" \
-              -o StrictHostKeyChecking=accept-new \
-              -o ConnectTimeout=30 \
-              "$NAS_USER@$NAS_HOST" \
-              "set -e
-               cd '$NAS_DEPLOY_DIR'
-               docker compose pull lclip
-               docker compose up -d --remove-orphans lclip
-               docker image prune -f"
+          SSH="ssh -i $KEY_FILE -p $NAS_PORT -o StrictHostKeyChecking=accept-new -o ConnectTimeout=30"
+          SCP="scp -i $KEY_FILE -P $NAS_PORT -o StrictHostKeyChecking=accept-new"
+
+          # ── Ensure deploy directory exists on NAS ──────────────────────────
+          $SSH "$NAS_USER@$NAS_HOST" "mkdir -p \"$NAS_DEPLOY_DIR\""
+
+          # ── Copy docker-compose.yml to NAS ─────────────────────────────────
+          # .env is NOT copied — create it manually on the NAS once (see .env.example)
+          $SCP docker-compose.yml "$NAS_USER@$NAS_HOST:$NAS_DEPLOY_DIR/"
+
+          # ── Pull new image & restart ───────────────────────────────────────
+          $SSH "$NAS_USER@$NAS_HOST" "
+            set -e
+            cd \"$NAS_DEPLOY_DIR\"
+            docker compose pull lclip
+            docker compose up -d --remove-orphans lclip
+            docker image prune -f
+          "
 
           rm -f "$KEY_FILE"
