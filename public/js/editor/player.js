@@ -29,13 +29,20 @@ const Player = (() => {
     setZoom(_zoom);
     setupMouseEvents();
 
-    EditorState.on('projectLoaded',    () => renderFrame());
+    EditorState.on('projectLoaded',    () => {
+      syncVideoToTime(EditorState.getCurrentTime());
+      renderFrame();
+    });
     EditorState.on('timeChanged',      onTimeChanged);
     EditorState.on('playStateChanged', onPlayStateChanged);
     EditorState.on('clipsChanged',     () => renderFrame());
     EditorState.on('selectionChanged', () => renderFrame());
     EditorState.on('layersChanged',    () => renderFrame());
 
+    // Re-render once video data is available (covers initial load & src change)
+    videoEl.addEventListener('loadeddata', () => {
+      if (!EditorState.isPlaying()) renderFrame();
+    });
     // Re-render once seek completes so cut clips don't show black
     videoEl.addEventListener('seeked', () => {
       if (!EditorState.isPlaying()) renderFrame();
