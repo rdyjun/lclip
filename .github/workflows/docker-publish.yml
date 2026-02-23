@@ -70,10 +70,6 @@ jobs:
       NAS_PORT:       ${{ secrets.NAS_PORT || '22' }}
 
     steps:
-      # docker-compose.yml을 NAS로 복사하기 위해 체크아웃 필요
-      - name: Checkout
-        uses: actions/checkout@v4
-
       - name: Check NAS secrets
         id: check
         run: |
@@ -97,14 +93,6 @@ jobs:
           ssh-keyscan -p "$NAS_PORT" -H "$NAS_HOST" >> ~/.ssh/known_hosts 2>/dev/null
 
           SSH="ssh -i $KEY_FILE -p $NAS_PORT -o StrictHostKeyChecking=accept-new -o ConnectTimeout=30"
-          SCP="scp -i $KEY_FILE -P $NAS_PORT -o StrictHostKeyChecking=accept-new"
-
-          # ── Ensure deploy directory exists on NAS ──────────────────────────
-          $SSH "$NAS_USER@$NAS_HOST" "mkdir -p \"$NAS_DEPLOY_DIR\""
-
-          # ── Copy docker-compose.yml to NAS ─────────────────────────────────
-          # .env is NOT copied — create it manually on the NAS once (see .env.example)
-          $SCP docker-compose.yml "$NAS_USER@$NAS_HOST:$NAS_DEPLOY_DIR/"
 
           # ── Pull new image & restart ───────────────────────────────────────
           $SSH "$NAS_USER@$NAS_HOST" "
