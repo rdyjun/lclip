@@ -125,12 +125,21 @@ const Player = (() => {
     let newTime;
 
     if (clip && videoEl.readyState >= 2 && !videoEl.paused) {
-      // Derive editor time from actual video position (no drift, no stutter)
-      newTime = clip.startTime + (videoEl.currentTime - clip.srcStart);
+      const derived = clip.startTime + (videoEl.currentTime - clip.srcStart);
+
+      // Guard: if derived time is well before this clip's start, the video element is still
+      // seeking to the correct position (currentTime briefly near 0 after src change).
+      // Fall back to timer until the seek settles.
+      if (derived < clip.startTime - 0.5) {
+        if (lastTimestamp !== null) newTime = t + (ts - lastTimestamp) / 1000;
+      } else {
+        // Derive editor time from actual video position (no drift, no stutter)
+        newTime = derived;
+      }
 
       // Handle clip boundary transition — find nearest next video clip across all layers
       // Guard: only fire once per clip boundary (prevents repeated src-assignment causing stutter)
-      if (newTime >= clip.endTime - 0.02 && project && _lastBoundaryClipId !== clip.id) {
+      if (newTime !== undefined && newTime >= clip.endTime - 0.02 && project && _lastBoundaryClipId !== clip.id) {
         _lastBoundaryClipId = clip.id;
         let nextClip = null;
         for (const layer of project.layers) {
@@ -159,7 +168,7 @@ const Player = (() => {
 
     if (newTime !== undefined) {
       const dur = EditorState.getTotalDuration();
-      if (newTime >= dur) { EditorState.setCurrentTime(dur); EditorState.setPlaying(false); return; }
+      if (newTime >= dur) { EditorState.setCurrentTime(0); EditorState.setPlaying(false); return; }
       // setCurrentTime → onTimeChanged checks isPlaying() and skips syncVideoToTime
       EditorState.setCurrentTime(newTime);
     }
