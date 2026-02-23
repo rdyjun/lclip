@@ -11,6 +11,8 @@ const Timeline = (() => {
   let drag = null;
   let _isDragging = false; // suppresses render() during drag
   let rightClickInfo = null;
+  let _zoomPivot = null;   // { timeAtMouse, mouseX } for mouse-centered zoom
+  const SNAP_PX  = 8;      // snap threshold in screen pixels
 
   function init() {
     rulerCanvas = document.getElementById('timeline-ruler');
@@ -65,13 +67,14 @@ const Timeline = (() => {
     slider.addEventListener('input', () => onZoomChange(parseFloat(slider.value)));
   }
 
-  function onZoomChange(val) {
+  function onZoomChange(val, pivot) {
     const fps     = getFps();
     const framePx = val / fps;
     const label   = framePx >= 1 ? `${val}px/s · ${framePx.toFixed(1)}px/f` : `${val}px/s`;
     document.getElementById('tl-zoom-label').textContent = label;
 
     _pendingZoom = val;
+    if (pivot) _zoomPivot = pivot; // update pivot on every scroll event
     if (_zoomRaf) return;
     _zoomRaf = requestAnimationFrame(() => {
       _zoomRaf  = null;
@@ -92,6 +95,14 @@ const Timeline = (() => {
       const clip = EditorState.getClip(el.dataset.layerId, el.dataset.clipId);
       if (clip) positionClip(el, clip);
     });
+
+    // Restore scroll so the time under mouse stays in place
+    if (_zoomPivot) {
+      const wrapper = document.getElementById('timeline-tracks-wrapper');
+      wrapper.scrollLeft = Math.max(0, _zoomPivot.timeAtMouse * pxPerSec - _zoomPivot.mouseX);
+      scrollX    = wrapper.scrollLeft;
+      _zoomPivot = null;
+    }
 
     renderRuler();
     renderPlayhead();
@@ -271,14 +282,29 @@ const Timeline = (() => {
     const minDur  = 1 / getFps();
 
     if (drag.type === 'move') {
-      const newStart = snapFrame(Math.max(0, drag.origStart + dt));
-      const delta    = newStart - drag.origStart;
+      const dur      = drag.origEnd - drag.origStart;
+      const rawStart = Math.max(0, drag.origStart + dt);
+      const edges    = getSnapEdges(drag.clipId);
+      const sStart   = snapToEdges(rawStart, edges);
+      const sEnd     = snapToEdges(rawStart + dur, edges);
+      const dStart   = Math.abs(sStart - rawStart);
+      const dEnd     = Math.abs(sEnd - (rawStart + dur));
+      let newStart;
+      if (dStart > 0 || dEnd > 0) {
+        // Snap whichever edge is closer to a target
+        newStart = dStart <= dEnd ? Math.max(0, sStart) : Math.max(0, sEnd - dur);
+      } else {
+        newStart = snapFrame(rawStart);
+      }
       EditorState.updateClip(drag.layerId, drag.clipId, {
         startTime: newStart,
-        endTime:   snapFrame(drag.origEnd + delta)
+        endTime:   newStart + dur
       });
     } else if (drag.type === 'resize-start') {
-      const newStart   = snapFrame(Math.max(0, Math.min(drag.origEnd - minDur, drag.origStart + dt)));
+      const rawStart   = Math.max(0, Math.min(drag.origEnd - minDur, drag.origStart + dt));
+      const edges      = getSnapEdges(drag.clipId);
+      const sStart     = snapToEdges(rawStart, edges);
+      const newStart   = Math.abs(sStart - rawStart) > 0 ? Math.max(0, sStart) : snapFrame(rawStart);
       const startDelta = newStart - drag.origStart;
       EditorState.updateClip(drag.layerId, drag.clipId, {
         startTime: newStart,
@@ -288,10 +314,15 @@ const Timeline = (() => {
       });
     } else if (drag.type === 'resize-end') {
       const maxSrcEnd = clip.type !== 'subtitle' ? (project.sourceVideoDuration || 9999) : 9999;
-      const newEnd    = snapFrame(Math.max(
+      const rawEnd    = Math.max(
         drag.origStart + minDur,
         Math.min(drag.origEnd + dt, drag.origStart + (maxSrcEnd - (clip.srcStart || 0)))
-      ));
+      );
+      const edges     = getSnapEdges(drag.clipId);
+      const sEnd      = snapToEdges(rawEnd, edges);
+      const newEnd    = Math.abs(sEnd - rawEnd) > 0
+        ? Math.max(drag.origStart + minDur, sEnd)
+        : snapFrame(rawEnd);
       const endDelta  = newEnd - drag.origEnd;
       EditorState.updateClip(drag.layerId, drag.clipId, {
         endTime: newEnd,
@@ -408,10 +439,13 @@ const Timeline = (() => {
     wrapper.addEventListener('wheel', e => {
       if (!e.ctrlKey) return;
       e.preventDefault();
-      const slider = document.getElementById('tl-zoom-slider');
-      const next   = calcZoomNext(parseFloat(slider.value), e.deltaY < 0 ? +1 : -1);
-      slider.value = next;
-      onZoomChange(next);
+      const rect        = wrapper.getBoundingClientRect();
+      const mouseX      = e.clientX - rect.left;
+      const timeAtMouse = (mouseX + wrapper.scrollLeft) / pxPerSec;
+      const slider      = document.getElementById('tl-zoom-slider');
+      const next        = calcZoomNext(parseFloat(slider.value), e.deltaY < 0 ? +1 : -1);
+      slider.value      = next;
+      onZoomChange(next, { timeAtMouse, mouseX });
     }, { passive: false });
   }
 
@@ -601,6 +635,31 @@ const Timeline = (() => {
   function xToTime(x)    { return x / pxPerSec; }
   function getFps()      { const p = EditorState.getProject(); return p ? (p.fps || 30) : 30; }
   function snapFrame(t)  { const fps = getFps(); return Math.round(t * fps) / fps; }
+
+  /** Returns all clip edge times except for the excluded clip */
+  function getSnapEdges(excludeClipId) {
+    const project = EditorState.getProject();
+    if (!project) return [];
+    const edges = [];
+    for (const layer of project.layers) {
+      for (const clip of layer.clips) {
+        if (clip.id === excludeClipId) continue;
+        edges.push(clip.startTime, clip.endTime);
+      }
+    }
+    return edges;
+  }
+
+  /** Snaps t to nearest edge within SNAP_PX threshold; returns t unchanged if nothing close */
+  function snapToEdges(t, edges) {
+    const threshold = SNAP_PX / pxPerSec;
+    let best = t, bestDist = threshold;
+    for (const edge of edges) {
+      const dist = Math.abs(t - edge);
+      if (dist < bestDist) { bestDist = dist; best = edge; }
+    }
+    return best;
+  }
 
   function getGridStep() {
     if (pxPerSec >= 200) return 1;
