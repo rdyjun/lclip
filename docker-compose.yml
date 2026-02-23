@@ -1,0 +1,27 @@
+services:
+  lclip:
+    image: ghcr.io/${GITHUB_USER}/lclip:latest
+    container_name: lclip
+    restart: unless-stopped
+    ports:
+      - "${PORT:-3000}:3000"
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      # Storage paths inside the container — do NOT change these.
+      # Change the left-hand side of the volume entries below instead.
+      - DATA_DIR=/app/data
+      - UPLOADS_DIR=/app/uploads
+      - EXPORTS_DIR=/app/exports
+    volumes:
+      # ── Customize the LEFT side to point to your NAS directories ──────────
+      # Format:  /nas/host/path:/container/path
+      #
+      # JSON database (small, just text files)
+      - ${NAS_DATA_DIR:-./data}:/app/data
+      #
+      # Uploaded & registered videos, audio
+      - ${NAS_UPLOADS_DIR:-./uploads}:/app/uploads
+      #
+      # Exported mp4 files
+      - ${NAS_EXPORTS_DIR:-./exports}:/app/exports

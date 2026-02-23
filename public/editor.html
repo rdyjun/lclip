@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ShortCut Studio - 편집기</title>
+  <link rel="stylesheet" href="/css/style.css">
+  <link rel="stylesheet" href="/css/editor.css">
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@300;400;500;700&display=swap" rel="stylesheet">
+</head>
+<body class="editor-mode">
+
+  <!-- Top Toolbar -->
+  <div class="editor-toolbar">
+    <div class="toolbar-left">
+      <a href="/" class="btn btn-secondary btn-sm">← 홈</a>
+      <span class="project-title" id="project-title">프로젝트 로딩 중...</span>
+    </div>
+    <div class="toolbar-center">
+      <div class="playback-controls">
+        <button class="ctrl-btn" id="btn-to-start" title="처음으로">⏮</button>
+        <button class="ctrl-btn" id="btn-step-back" title="1프레임 뒤로">⏪</button>
+        <button class="ctrl-btn ctrl-play" id="btn-play-pause" title="재생/정지">▶</button>
+        <button class="ctrl-btn" id="btn-step-fwd" title="1프레임 앞으로">⏩</button>
+        <button class="ctrl-btn" id="btn-to-end" title="끝으로">⏭</button>
+      </div>
+      <div class="timecode" id="timecode">00:00.000</div>
+    </div>
+    <div class="toolbar-right">
+      <button class="ctrl-btn" id="btn-cut" title="현재 위치에서 자르기 (C)">✂</button>
+      <select class="form-input tool-select" id="active-tool" style="width:auto;padding:6px 10px">
+        <option value="select">선택 도구</option>
+        <option value="razor">자르기 도구</option>
+      </select>
+      <button class="ctrl-btn" id="btn-undo" title="실행 취소 (Ctrl+Z)" disabled>↩</button>
+      <button class="ctrl-btn" id="btn-redo" title="다시 실행 (Ctrl+Y)" disabled>↪</button>
+      <button class="btn btn-secondary btn-sm" id="btn-save">💾 저장</button>
+      <button class="btn btn-primary btn-sm" id="btn-export">내보내기 ▶</button>
+    </div>
+  </div>
+
+  <!-- Main Editor Layout -->
+  <div class="editor-layout">
+
+    <!-- Left: Preview + Properties -->
+    <div class="editor-left" id="editor-left">
+      <!-- Preview Canvas -->
+      <div class="preview-section">
+        <div class="preview-container" id="preview-container">
+          <canvas id="preview-canvas"></canvas>
+          <video id="preview-video" style="display:none" preload="auto"></video>
+        </div>
+        <div class="preview-controls">
+          <span class="preview-size">1080 × 1920</span>
+          <div class="zoom-controls">
+            <button class="zoom-btn" id="zoom-out">-</button>
+            <span class="zoom-value" id="zoom-value">50%</span>
+            <button class="zoom-btn" id="zoom-in">+</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Properties Panel -->
+      <div class="properties-panel" id="properties-panel">
+        <div class="properties-header">
+          <span id="properties-title">속성</span>
+        </div>
+        <div class="properties-body" id="properties-body">
+          <p class="prop-hint">클립을 선택하면 속성이 표시됩니다.</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- Panel resize divider -->
+    <div class="panel-divider" id="panel-divider"></div>
+
+    <!-- Right: Layers + Timeline -->
+    <div class="editor-right">
+      <!-- Layer Controls -->
+      <div class="layer-controls">
+        <div class="layer-controls-header">
+          <span>레이어</span>
+          <div class="layer-add-btns">
+            <button class="btn btn-sm btn-secondary" id="btn-add-subtitle">+ 자막</button>
+            <button class="btn btn-sm btn-secondary" id="btn-add-audio">+ 음악</button>
+          </div>
+        </div>
+        <div class="layers-list" id="layers-list"></div>
+      </div>
+
+      <!-- Timeline -->
+      <div class="timeline-wrapper">
+        <div class="timeline-header">
+          <div class="timeline-label-col"></div>
+          <div class="timeline-ruler-wrapper">
+            <canvas id="timeline-ruler" class="timeline-ruler"></canvas>
+          </div>
+        </div>
+        <div class="timeline-body">
+          <div class="timeline-labels" id="timeline-labels"></div>
+          <div class="timeline-tracks-wrapper" id="timeline-tracks-wrapper">
+            <div id="timeline-tracks-inner"></div>
+            <div class="playhead-line" id="playhead-line"></div>
+          </div>
+        </div>
+        <div class="timeline-footer">
+          <button class="zoom-btn" id="tl-zoom-out">-</button>
+          <input type="range" id="tl-zoom-slider" min="0.1" max="10000" step="0.1" value="50" style="width:120px">
+          <button class="zoom-btn" id="tl-zoom-in">+</button>
+          <span class="tl-zoom-label" id="tl-zoom-label">50px/s</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Export Modal -->
+  <div class="modal-overlay" id="modal-export" style="display:none">
+    <div class="modal">
+      <div class="modal-header">
+        <h2>영상 내보내기</h2>
+        <button class="modal-close" id="export-modal-close">✕</button>
+      </div>
+      <div class="modal-body">
+        <div id="export-status-area">
+          <p>FFmpeg로 영상을 렌더링합니다. 완료까지 시간이 걸릴 수 있습니다.</p>
+          <div class="export-progress-bar" id="export-progress-bar" style="display:none">
+            <div class="export-progress-fill" id="export-progress-fill"></div>
+          </div>
+          <p id="export-status-text" style="margin-top:12px;color:var(--text-secondary);font-size:13px;"></p>
+        </div>
+        <div id="export-download-area" style="display:none;text-align:center;padding:20px 0">
+          <p style="margin-bottom:16px;font-size:15px;">✅ 내보내기 완료!</p>
+          <a class="btn btn-primary" id="export-download-link" download>영상 다운로드</a>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" id="export-modal-close2">닫기</button>
+        <button class="btn btn-primary" id="btn-start-export">내보내기 시작</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Audio Upload Modal -->
+  <div class="modal-overlay" id="modal-audio" style="display:none">
+    <div class="modal">
+      <div class="modal-header">
+        <h2>음악 추가</h2>
+        <button class="modal-close" id="audio-modal-close">✕</button>
+      </div>
+      <div class="modal-body">
+        <label class="form-label">오디오 파일 선택</label>
+        <input type="file" id="audio-file-input" accept="audio/*" class="form-input" style="padding:6px">
+        <div class="prop-row" style="margin-top:12px">
+          <label class="prop-label">시작 시간 (초)</label>
+          <input type="number" class="prop-input" id="audio-start-time" value="0" min="0" step="0.1">
+        </div>
+        <div class="prop-row">
+          <label class="prop-label">볼륨</label>
+          <input type="range" id="audio-volume" min="0" max="100" value="80">
+          <span id="audio-volume-label">80%</span>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" id="audio-cancel">취소</button>
+        <button class="btn btn-primary" id="audio-confirm">추가</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Context Menu -->
+  <div class="context-menu" id="context-menu" style="display:none">
+    <div class="ctx-item" data-action="cut">✂ 이 위치에서 자르기</div>
+    <div class="ctx-item" data-action="split">분할하기</div>
+    <div class="ctx-divider"></div>
+    <div class="ctx-item" data-action="delete">🗑 삭제</div>
+    <div class="ctx-item" data-action="duplicate">복사</div>
+  </div>
+
+  <script src="/js/editor/state.js"></script>
+  <script src="/js/editor/player.js"></script>
+  <script src="/js/editor/timeline.js"></script>
+  <script src="/js/editor/layers.js"></script>
+  <script src="/js/editor/properties.js"></script>
+  <script src="/js/editor/editor.js"></script>
+</body>
+</html>

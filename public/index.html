@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ShortCut Studio - 쇼츠 편집기</title>
+  <link rel="stylesheet" href="/css/style.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@300;400;500;700&display=swap" rel="stylesheet">
+</head>
+<body>
+  <div class="app-wrapper">
+    <!-- Header -->
+    <header class="app-header">
+      <div class="logo">
+        <span class="logo-icon">✂</span>
+        <span class="logo-text">ShortCut Studio</span>
+      </div>
+      <nav class="header-nav">
+        <a href="#" class="nav-link active" data-page="videos">내 영상</a>
+        <a href="#" class="nav-link" data-page="projects">쇼츠 프로젝트</a>
+      </nav>
+    </header>
+
+    <!-- Main content -->
+    <main class="app-main">
+      <!-- Videos Page -->
+      <div id="page-videos" class="page active">
+        <div class="page-header">
+          <h1>내 영상 라이브러리</h1>
+          <button class="btn btn-primary" id="btn-upload">
+            <span class="icon">+</span> 영상 업로드
+          </button>
+        </div>
+
+        <!-- Add video tabs -->
+        <div class="add-video-tabs">
+          <button class="add-tab active" id="tab-upload-btn" data-tab="upload">파일 업로드</button>
+          <button class="add-tab" id="tab-local-btn" data-tab="local">로컬 경로 등록</button>
+        </div>
+
+        <!-- Upload zone (tab: upload) -->
+        <div class="upload-zone" id="upload-zone" data-tab-content="upload">
+          <div class="upload-zone-inner">
+            <div class="upload-icon">🎬</div>
+            <p class="upload-title">영상을 드래그하거나 클릭하여 업로드</p>
+            <p class="upload-sub">MP4, MOV, AVI, MKV, WebM 지원 · 용량 제한 없음</p>
+            <input type="file" id="file-input" accept="video/*" style="display:none">
+          </div>
+          <div class="upload-progress" id="upload-progress" style="display:none">
+            <div class="progress-bar">
+              <div class="progress-fill" id="progress-fill"></div>
+            </div>
+            <p class="progress-text" id="progress-text">업로드 중...</p>
+          </div>
+        </div>
+
+        <!-- Local path zone (tab: local) -->
+        <div class="local-path-zone" id="local-path-zone" data-tab-content="local" style="display:none">
+          <div class="local-path-inner">
+            <div class="upload-icon">📁</div>
+            <p class="upload-title">로컬 파일 경로로 등록</p>
+            <p class="upload-sub">파일을 복사하지 않고 경로만 등록합니다 — 대용량 영상에 적합</p>
+            <div class="local-path-input-row">
+              <input type="text" class="form-input" id="local-path-input"
+                placeholder="예) C:\Videos\my_video.mp4 또는 /home/user/videos/clip.mp4">
+              <button class="btn btn-primary" id="btn-register-local">등록</button>
+            </div>
+            <p class="local-path-hint" id="local-path-hint"></p>
+          </div>
+        </div>
+
+        <!-- Video grid -->
+        <div class="video-grid" id="video-grid">
+          <div class="empty-state" id="empty-state">
+            <p>업로드된 영상이 없습니다</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Projects Page -->
+      <div id="page-projects" class="page">
+        <div class="page-header">
+          <h1>쇼츠 프로젝트</h1>
+        </div>
+        <div class="project-grid" id="project-grid">
+          <div class="empty-state" id="empty-projects">
+            <p>생성된 쇼츠 프로젝트가 없습니다</p>
+            <p class="sub">영상 라이브러리에서 쇼츠 만들기를 클릭하세요</p>
+          </div>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <!-- Video Card Template -->
+  <template id="tpl-video-card">
+    <div class="video-card">
+      <div class="video-thumb">
+        <video class="thumb-video" preload="metadata" muted></video>
+        <div class="thumb-overlay">
+          <span class="duration-badge"></span>
+        </div>
+      </div>
+      <div class="video-info">
+        <p class="video-name"></p>
+        <p class="video-meta"></p>
+      </div>
+      <div class="video-actions">
+        <button class="btn btn-sm btn-primary btn-create-short">✂ 쇼츠 만들기</button>
+        <button class="btn btn-sm btn-danger btn-delete">삭제</button>
+      </div>
+    </div>
+  </template>
+
+  <!-- Project Card Template -->
+  <template id="tpl-project-card">
+    <div class="project-card">
+      <div class="project-thumb">
+        <div class="project-thumb-icon">🎬</div>
+      </div>
+      <div class="project-info">
+        <p class="project-name"></p>
+        <p class="project-meta"></p>
+      </div>
+      <div class="project-actions">
+        <button class="btn btn-sm btn-primary btn-open-editor">편집하기</button>
+        <button class="btn btn-sm btn-danger btn-delete-project">삭제</button>
+      </div>
+    </div>
+  </template>
+
+  <!-- Modal: Create Short -->
+  <div class="modal-overlay" id="modal-create-short" style="display:none">
+    <div class="modal">
+      <div class="modal-header">
+        <h2>쇼츠 만들기</h2>
+        <button class="modal-close" id="modal-close-btn">✕</button>
+      </div>
+      <div class="modal-body">
+        <label class="form-label">프로젝트 이름</label>
+        <input type="text" class="form-input" id="project-name-input" placeholder="쇼츠 제목을 입력하세요">
+        <p class="form-hint">원본 영상: <span id="source-video-name"></span></p>
+
+        <div class="rofl-upload-section">
+          <label class="form-label" style="margin-top:14px;display:block">
+            ROFL 파일 첨부 <span style="color:var(--text-muted);font-weight:400">(선택 — 킬/데스/어시 타임라인 자동 분석)</span>
+          </label>
+          <div class="rofl-file-row">
+            <input type="file" id="rofl-file-input" accept=".rofl" style="display:none">
+            <button class="btn btn-secondary btn-sm" id="btn-pick-rofl">📂 파일 선택</button>
+            <span id="rofl-file-name" style="font-size:12px;color:var(--text-muted);margin-left:8px">선택된 파일 없음</span>
+            <button class="btn btn-sm" id="btn-clear-rofl" style="display:none;margin-left:6px;background:none;border:none;color:var(--text-muted);cursor:pointer">✕</button>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" id="btn-cancel-short">취소</button>
+        <button class="btn btn-primary" id="btn-confirm-short">편집기 열기</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: ROFL Champion Selection -->
+  <div class="modal-overlay" id="modal-rofl" style="display:none">
+    <div class="modal" style="max-width:560px;width:95%">
+      <div class="modal-header">
+        <h2>ROFL 분석 — 챔피언 선택</h2>
+        <button class="modal-close" id="rofl-modal-close">✕</button>
+      </div>
+      <div class="modal-body" id="rofl-modal-body">
+        <p style="color:var(--text-secondary);font-size:13px">ROFL 파일을 분석하는 중...</p>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" id="btn-rofl-back">← 뒤로</button>
+        <button class="btn btn-primary" id="btn-rofl-confirm" disabled>클립 생성 후 편집기 열기</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/js/app.js"></script>
+</body>
+</html>

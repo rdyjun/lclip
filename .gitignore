@@ -1,0 +1,48 @@
+# ── Dependencies ──────────────────────────────────────────────────────────────
+node_modules/
+
+# ── Runtime data: ignore file contents, keep directory structure via .gitkeep ─
+
+# JSON database
+data/*
+!data/.gitkeep
+
+# Uploaded media (can be very large)
+uploads/videos/*
+!uploads/videos/.gitkeep
+uploads/audio/*
+!uploads/audio/.gitkeep
+uploads/thumbnails/*
+!uploads/thumbnails/.gitkeep
+uploads/tmp/*
+!uploads/tmp/.gitkeep
+
+# Exported mp4 files
+exports/*
+!exports/.gitkeep
+
+# ── Environment / secrets ─────────────────────────────────────────────────────
+# Commit .env.example ONLY — never commit .env
+.env
+.env.local
+.env.*.local
+
+# ── OS ────────────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── Claude Code internal files ────────────────────────────────────────────────
+.claude/
+
+# ── Editors ───────────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*.suo
+
+# ── Logs ──────────────────────────────────────────────────────────────────────
+logs/
+*.log
+npm-debug.log*
