@@ -3,6 +3,7 @@
  * - Aspect-ratio-correct rendering (cover / contain / fill)
  * - Video-driven playback — no seek() calls during play (eliminates black frames)
  * - Interactive canvas: click to select, drag to move, drag handles to resize
+ * - Pan with spacebar + drag; zoom +/- buttons scale the content
  */
 const Player = (() => {
   let canvas, ctx, videoEl;
@@ -13,9 +14,15 @@ const Player = (() => {
 
   const OUTPUT_W = 1080, OUTPUT_H = 1920;
   const WS_MARGIN = 150; // workspace margin in output pixels around the output frame
-  const HANDLE_PX = 7; // handle half-size in canvas pixels
+  const HANDLE_PX = 7;  // handle half-size in canvas pixels
 
-  // Drag state for canvas-based editing
+  // Pan state
+  let _panX = 0, _panY = 0;         // current pan offset in canvas pixels
+  let _isPanMode  = false;           // spacebar held
+  let _isPanning  = false;           // actively dragging to pan
+  let _panStart   = null;            // { x, y, panX, panY } when pan drag started
+
+  // Drag state for canvas-based clip editing
   let previewDrag = null;
   // Clip bounds visible at the current frame { layerId, clipId, x, y, w, h }
   let _visibleBounds = [];
@@ -26,7 +33,10 @@ const Player = (() => {
     ctx     = canvas.getContext('2d');
     videoEl = document.getElementById('preview-video');
 
-    setZoom(_zoom);
+    // Size canvas to fill container; re-center on resize
+    resizeCanvas();
+    new ResizeObserver(resizeCanvas).observe(canvas.parentElement);
+
     setupMouseEvents();
 
     EditorState.on('projectLoaded',    () => {
@@ -48,15 +58,34 @@ const Player = (() => {
       if (!EditorState.isPlaying()) renderFrame();
     });
 
-    document.getElementById('zoom-in') .addEventListener('click', () => setZoom(Math.min(_zoom + 0.1, 2)));
-    document.getElementById('zoom-out').addEventListener('click', () => setZoom(Math.max(_zoom - 0.1, 0.1)));
+    document.getElementById('zoom-in') .addEventListener('click', () => setZoom(Math.min(_zoom + 0.1, 4)));
+    document.getElementById('zoom-out').addEventListener('click', () => setZoom(Math.max(_zoom - 0.1, 0.05)));
+  }
+
+  // ── Canvas sizing & centering ──────────────────────────────────────────────
+  function resizeCanvas() {
+    const container = canvas.parentElement;
+    const w = container.clientWidth;
+    const h = container.clientHeight;
+    if (w === 0 || h === 0) return;
+    canvas.width  = w;
+    canvas.height = h;
+    centerView();
+    renderFrame();
+  }
+
+  /** Centers the output+workspace block in the canvas */
+  function centerView() {
+    const totalW = (OUTPUT_W + WS_MARGIN * 2) * _zoom;
+    const totalH = (OUTPUT_H + WS_MARGIN * 2) * _zoom;
+    _panX = Math.round((canvas.width  - totalW) / 2);
+    _panY = Math.round((canvas.height - totalH) / 2);
   }
 
   function setZoom(z) {
     _zoom = z;
-    canvas.width  = Math.round((OUTPUT_W + WS_MARGIN * 2) * z);
-    canvas.height = Math.round((OUTPUT_H + WS_MARGIN * 2) * z);
     document.getElementById('zoom-value').textContent = `${Math.round(z * 100)}%`;
+    centerView();
     renderFrame();
   }
 
@@ -182,21 +211,24 @@ const Player = (() => {
     const t       = EditorState.getCurrentTime();
     const project = EditorState.getProject();
 
-    // Workspace background
+    // 1. Workspace background (full canvas, no transform)
     ctx.fillStyle = '#111';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-    // Output frame
+    // 2. Content is drawn in pan-translated space
+    ctx.save();
+    ctx.translate(_panX, _panY);
+
+    // Output frame in content space (WS_MARGIN offsets, no pan needed here)
     const ofx = WS_MARGIN * _zoom, ofy = WS_MARGIN * _zoom;
     const ofw = OUTPUT_W * _zoom,   ofh = OUTPUT_H * _zoom;
     ctx.fillStyle = '#000';
     ctx.fillRect(ofx, ofy, ofw, ofh);
-    // Output frame border
     ctx.strokeStyle = 'rgba(255,255,255,0.18)';
     ctx.lineWidth   = 1;
     ctx.strokeRect(ofx, ofy, ofw, ofh);
 
-    if (!project) return;
+    if (!project) { ctx.restore(); return; }
 
     _visibleBounds = [];
     const z = _zoom;
@@ -215,19 +247,38 @@ const Player = (() => {
       });
     });
 
-    // Dim overlay — darkens workspace areas outside the output render region
-    // Drawn after clips so out-of-bounds clip content appears muted,
-    // but before handles so selection handles remain fully visible.
+    ctx.restore();
+
+    // 3. Dim overlay — drawn in screen space after restore.
+    //    Output frame in screen coords = content coords + pan offset.
+    const sfx = ofx + _panX, sfy = ofy + _panY;
+    const sfw = ofw, sfh = ofh;
+
     ctx.fillStyle = 'rgba(0,0,0,0.58)';
-    ctx.fillRect(0, 0, canvas.width, ofy);                                     // top
-    ctx.fillRect(0, ofy + ofh, canvas.width, canvas.height - ofy - ofh);       // bottom
-    ctx.fillRect(0, ofy, ofx, ofh);                                            // left
-    ctx.fillRect(ofx + ofw, ofy, canvas.width - ofx - ofw, ofh);              // right
-    // Re-draw output frame border on top of the overlay so it stays crisp
+    // Top
+    const topH = Math.max(0, Math.min(sfy, canvas.height));
+    if (topH > 0) ctx.fillRect(0, 0, canvas.width, topH);
+    // Bottom
+    const botY = Math.max(0, Math.min(sfy + sfh, canvas.height));
+    const botH = canvas.height - botY;
+    if (botH > 0) ctx.fillRect(0, botY, canvas.width, botH);
+    // Left & Right (only in output frame Y band, clamped to canvas)
+    const oy1 = Math.max(0, Math.min(sfy, canvas.height));
+    const oy2 = Math.max(0, Math.min(sfy + sfh, canvas.height));
+    const oH  = oy2 - oy1;
+    if (oH > 0) {
+      const leftW = Math.max(0, Math.min(sfx, canvas.width));
+      if (leftW > 0) ctx.fillRect(0, oy1, leftW, oH);
+      const rightX = Math.max(0, Math.min(sfx + sfw, canvas.width));
+      const rightW = canvas.width - rightX;
+      if (rightW > 0) ctx.fillRect(rightX, oy1, rightW, oH);
+    }
+    // Re-draw output frame border above the overlay
     ctx.strokeStyle = 'rgba(255,255,255,0.45)';
     ctx.lineWidth   = 1;
-    ctx.strokeRect(ofx + 0.5, ofy + 0.5, ofw - 1, ofh - 1);
+    ctx.strokeRect(sfx + 0.5, sfy + 0.5, sfw - 1, sfh - 1);
 
+    // 4. Selection handles (screen space, above overlay)
     const selId = EditorState.getSelectedClip();
     if (selId) {
       const b = _visibleBounds.find(b => b.clipId === selId);
@@ -337,8 +388,10 @@ const Player = (() => {
     ];
   }
 
+  // Handle positions are in screen space (pan offset applied)
   function drawHandles(bounds, z) {
-    const px = (bounds.x + WS_MARGIN) * z, py = (bounds.y + WS_MARGIN) * z;
+    const px = (bounds.x + WS_MARGIN) * z + _panX;
+    const py = (bounds.y + WS_MARGIN) * z + _panY;
     const pw = bounds.w * z, ph = bounds.h * z;
     const hs = HANDLE_PX;
 
@@ -371,19 +424,45 @@ const Player = (() => {
     canvas.addEventListener('mousemove', onCanvasHover);
     window.addEventListener('mousemove', onMouseMove);
     window.addEventListener('mouseup',   onMouseUp);
+
+    // Spacebar pan mode — registered on document BEFORE editor.js keydown listener,
+    // so stopImmediatePropagation() prevents the play/pause shortcut while panning.
+    document.addEventListener('keydown', e => {
+      if (e.repeat) return;
+      if (e.code === 'Space' &&
+          e.target.tagName !== 'INPUT' &&
+          e.target.tagName !== 'TEXTAREA' &&
+          e.target.tagName !== 'SELECT') {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        _isPanMode = true;
+        canvas.style.cursor = 'grab';
+      }
+    });
+    document.addEventListener('keyup', e => {
+      if (e.code === 'Space') {
+        _isPanMode  = false;
+        _isPanning  = false;
+        _panStart   = null;
+        canvas.style.cursor = 'default';
+      }
+    });
   }
 
   function canvasXY(e) {
     const r = canvas.getBoundingClientRect();
-    // Canvas may be CSS-scaled; convert CSS pixels → canvas internal pixels
-    const scaleX = canvas.width  / r.width;
-    const scaleY = canvas.height / r.height;
-    return { cx: (e.clientX - r.left) * scaleX, cy: (e.clientY - r.top) * scaleY };
+    // canvas CSS size == internal resolution (set by resizeCanvas), so scale is 1:1
+    return { cx: e.clientX - r.left, cy: e.clientY - r.top };
   }
-  function toOutput(cx, cy) { return { x: cx / _zoom - WS_MARGIN, y: cy / _zoom - WS_MARGIN }; }
+
+  // Convert canvas pixel → output-space coordinate (accounts for pan + zoom)
+  function toOutput(cx, cy) {
+    return { x: (cx - _panX) / _zoom - WS_MARGIN, y: (cy - _panY) / _zoom - WS_MARGIN };
+  }
 
   function getHandle(cpx, cpy, bounds) {
-    const px = (bounds.x + WS_MARGIN) * _zoom, py = (bounds.y + WS_MARGIN) * _zoom;
+    const px = (bounds.x + WS_MARGIN) * _zoom + _panX;
+    const py = (bounds.y + WS_MARGIN) * _zoom + _panY;
     const pw = bounds.w * _zoom, ph = bounds.h * _zoom;
     const hs = HANDLE_PX + 3;
     for (const h of handlePts(px, py, pw, ph)) {
@@ -394,6 +473,16 @@ const Player = (() => {
 
   function onMouseDown(e) {
     if (e.button !== 0) return;
+
+    // ── Pan mode (spacebar held) ──
+    if (_isPanMode) {
+      _isPanning = true;
+      _panStart  = { x: e.clientX, y: e.clientY, panX: _panX, panY: _panY };
+      canvas.style.cursor = 'grabbing';
+      e.preventDefault();
+      return;
+    }
+
     const { cx, cy } = canvasXY(e);
     const { x: ox, y: oy } = toOutput(cx, cy);
 
@@ -437,6 +526,14 @@ const Player = (() => {
   }
 
   function onMouseMove(e) {
+    // ── Pan drag ──
+    if (_isPanning && _panStart) {
+      _panX = _panStart.panX + (e.clientX - _panStart.x);
+      _panY = _panStart.panY + (e.clientY - _panStart.y);
+      renderFrame();
+      return;
+    }
+
     if (!previewDrag) return;
     const { cx, cy } = canvasXY(e);
     const { x: ox, y: oy } = toOutput(cx, cy);
@@ -487,10 +584,21 @@ const Player = (() => {
     renderFrame();
   }
 
-  function onMouseUp() { previewDrag = null; }
+  function onMouseUp() {
+    if (_isPanning) {
+      _isPanning = false;
+      _panStart  = null;
+      canvas.style.cursor = _isPanMode ? 'grab' : 'default';
+      return;
+    }
+    previewDrag = null;
+  }
 
   function onCanvasHover(e) {
+    if (_isPanning) { canvas.style.cursor = 'grabbing'; return; }
+    if (_isPanMode)  { canvas.style.cursor = 'grab';     return; }
     if (previewDrag) { canvas.style.cursor = 'grabbing'; return; }
+
     const { cx, cy } = canvasXY(e);
     const { x: ox, y: oy } = toOutput(cx, cy);
 
