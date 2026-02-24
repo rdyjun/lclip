@@ -3,32 +3,48 @@
  * - Aspect-ratio-correct rendering (cover / contain / fill)
  * - Video-driven playback — no seek() calls during play (eliminates black frames)
  * - Interactive canvas: click to select, drag to move, drag handles to resize
- * - Pan with spacebar + drag; zoom +/- buttons scale the content
+ * - Ctrl+scroll to zoom; canvas fills preview panel
+ * - Dual video elements: standby pre-seeks the next clip for seamless boundary transitions
  */
 const Player = (() => {
-  let canvas, ctx, videoEl;
-  let animFrameId = null;
+  let canvas, ctx;
+  let videoElA, videoElB;   // two video elements; only one is "active" at a time
+  let videoEl;              // pointer to the currently active element
+  let animFrameId   = null;
   let lastTimestamp = null;
   let _zoom = 0.25;
-  let _lastBoundaryClipId = null; // prevents repeated src-change on the same boundary
+  let _lastBoundaryClipId = null; // prevents re-firing on the same clip boundary
+
+  // Standby pre-load state
+  let _preloadClipId = null; // id of the clip currently pre-loaded on the standby element
 
   const OUTPUT_W = 1080, OUTPUT_H = 1920;
   const WS_MARGIN = 150; // workspace margin in output pixels around the output frame
   const HANDLE_PX = 7;  // handle half-size in canvas pixels
 
-  // Pan offset — tracks view position; updated only by centerView() (zoom keeps frame centered)
+  // Pan offset — updated by centerView(); zoom always re-centers the frame
   let _panX = 0, _panY = 0;
 
   // Drag state for canvas-based clip editing
-  let previewDrag = null;
-  // Clip bounds visible at the current frame { layerId, clipId, x, y, w, h }
-  let _visibleBounds = [];
+  let previewDrag    = null;
+  let _visibleBounds = []; // clip bounds visible at the current frame
 
   // ── Init ───────────────────────────────────────────────────────────────────
   function init() {
     canvas  = document.getElementById('preview-canvas');
     ctx     = canvas.getContext('2d');
-    videoEl = document.getElementById('preview-video');
+    videoElA = document.getElementById('preview-video');
+    videoElB = document.getElementById('preview-video-b');
+    videoEl  = videoElA; // A starts as active
+
+    // Re-render on active element events (paused state only; during play, playLoop handles it)
+    function onActiveEvent() {
+      if (!EditorState.isPlaying() && this === videoEl) renderFrame();
+    }
+    videoElA.addEventListener('loadeddata', onActiveEvent);
+    videoElA.addEventListener('seeked',     onActiveEvent);
+    videoElB.addEventListener('loadeddata', onActiveEvent);
+    videoElB.addEventListener('seeked',     onActiveEvent);
 
     // Size canvas to fill container; re-center on resize
     resizeCanvas();
@@ -37,6 +53,7 @@ const Player = (() => {
     setupMouseEvents();
 
     EditorState.on('projectLoaded',    () => {
+      _preloadClipId = null;
       syncVideoToTime(EditorState.getCurrentTime());
       renderFrame();
     });
@@ -45,15 +62,6 @@ const Player = (() => {
     EditorState.on('clipsChanged',     () => renderFrame());
     EditorState.on('selectionChanged', () => renderFrame());
     EditorState.on('layersChanged',    () => renderFrame());
-
-    // Re-render once video data is available (covers initial load & src change)
-    videoEl.addEventListener('loadeddata', () => {
-      if (!EditorState.isPlaying()) renderFrame();
-    });
-    // Re-render once seek completes so cut clips don't show black
-    videoEl.addEventListener('seeked', () => {
-      if (!EditorState.isPlaying()) renderFrame();
-    });
 
     document.getElementById('zoom-in') .addEventListener('click', () => setZoom(Math.min(_zoom + 0.1, 4)));
     document.getElementById('zoom-out').addEventListener('click', () => setZoom(Math.max(_zoom - 0.1, 0.05)));
@@ -71,7 +79,6 @@ const Player = (() => {
     renderFrame();
   }
 
-  /** Centers the output+workspace block in the canvas */
   function centerView() {
     const totalW = (OUTPUT_W + WS_MARGIN * 2) * _zoom;
     const totalH = (OUTPUT_H + WS_MARGIN * 2) * _zoom;
@@ -89,24 +96,25 @@ const Player = (() => {
   // ── Time / Playback ────────────────────────────────────────────────────────
   function onTimeChanged(t) {
     updateTimecode(t);
-    // Always sync video position (threshold in syncVideoToTime prevents spurious seeks during playback)
-    syncVideoToTime(t);
     if (!EditorState.isPlaying()) {
+      // Only sync and render during pause — playLoop manages everything during playback
+      syncVideoToTime(t);
       renderFrame();
     }
-    // During playback, renderFrame is called by playLoop
   }
 
   function onPlayStateChanged(playing) {
     if (playing) {
-      _lastBoundaryClipId = null; // reset so boundary transition can fire fresh
+      _lastBoundaryClipId = null;
+      _preloadClipId      = null;
       syncVideoToTime(EditorState.getCurrentTime());
       videoEl.play().catch(() => {});
       lastTimestamp = null;
-      animFrameId = requestAnimationFrame(playLoop);
+      animFrameId   = requestAnimationFrame(playLoop);
     } else {
       if (animFrameId) { cancelAnimationFrame(animFrameId); animFrameId = null; }
       videoEl.pause();
+      getStandby().pause();
       renderFrame();
     }
   }
@@ -114,7 +122,6 @@ const Player = (() => {
   function syncVideoToTime(t) {
     const project = EditorState.getProject();
     if (!project) return;
-    // Search all layers for a video clip at time t (supports clips on any layer)
     let clip = null;
     for (const layer of project.layers) {
       if (layer.visible === false) continue;
@@ -132,14 +139,66 @@ const Player = (() => {
     if (Math.abs(videoEl.currentTime - vt) > 0.08) videoEl.currentTime = vt;
   }
 
-  /** Animation loop — derives editor time FROM the video, never seeks while playing */
+  // ── Dual-element helpers ───────────────────────────────────────────────────
+  function getStandby() { return videoEl === videoElA ? videoElB : videoElA; }
+
+  /** Pre-seek the standby element to the start of the next clip */
+  function preloadNextClip(nextClip) {
+    if (_preloadClipId === nextClip.id) return; // already in progress
+    _preloadClipId = nextClip.id;
+    const standby = getStandby();
+    if (standby.getAttribute('data-clip-src') !== nextClip.src) {
+      standby.src = nextClip.src;
+      standby.setAttribute('data-clip-src', nextClip.src);
+    }
+    standby.currentTime = nextClip.srcStart;
+    // Browser will seek async; readyState check at switch time confirms readiness
+  }
+
+  /** Switch active element to the standby (which has nextClip pre-loaded) */
+  function switchToNextClip(nextClip) {
+    const standby = getStandby();
+    const old     = videoEl;
+
+    if (_preloadClipId === nextClip.id && standby.readyState >= 2) {
+      // Seamless swap — standby is already at the right frame
+      videoEl = standby;
+      videoEl.play().catch(() => {});
+      old.pause();
+    } else {
+      // Fallback: direct seek on the active element (may stutter briefly)
+      if (videoEl.getAttribute('data-clip-src') !== nextClip.src) {
+        videoEl.src = nextClip.src;
+        videoEl.setAttribute('data-clip-src', nextClip.src);
+      }
+      videoEl.currentTime = nextClip.srcStart;
+      videoEl.play().catch(() => {});
+    }
+    _preloadClipId = null;
+  }
+
+  /** Find the nearest video clip that starts at or after clip.endTime */
+  function findNextVideoClip(project, clip) {
+    let next = null;
+    for (const layer of project.layers) {
+      if (layer.visible === false) continue;
+      layer.clips.forEach(c => {
+        if (c.type === 'video' && c.startTime >= clip.endTime) {
+          if (!next || c.startTime < next.startTime) next = c;
+        }
+      });
+    }
+    return next;
+  }
+
+  // ── Animation loop ─────────────────────────────────────────────────────────
   function playLoop(ts) {
     if (!EditorState.isPlaying()) return;
 
     const project = EditorState.getProject();
     const t       = EditorState.getCurrentTime();
 
-    // Search all layers for the active video clip (supports clips on any layer)
+    // Find the video clip active at time t
     let clip = null;
     if (project) {
       for (const layer of project.layers) {
@@ -148,45 +207,39 @@ const Player = (() => {
         if (c) { clip = c; break; }
       }
     }
+
     let newTime;
 
     if (clip && videoEl.readyState >= 2 && !videoEl.paused) {
       const derived = clip.startTime + (videoEl.currentTime - clip.srcStart);
 
-      // Guard: if derived time is well before this clip's start, the video element is still
-      // seeking to the correct position (currentTime briefly near 0 after src change).
-      // Fall back to timer until the seek settles.
-      if (derived < clip.startTime - 0.5) {
+      // Guard: if derived time diverges from editor time by >0.5 s, the video element
+      // is still transitioning (src change / seek not yet settled) — use wall-clock timer.
+      // This replaces the old "derived < clip.startTime - 0.5" check which failed when
+      // clip.srcStart ≈ 0 (derived would equal clip.startTime, not triggering the guard,
+      // causing a spurious reset to t=0).
+      if (Math.abs(derived - t) > 0.5) {
         if (lastTimestamp !== null) newTime = t + (ts - lastTimestamp) / 1000;
       } else {
-        // Derive editor time from actual video position (no drift, no stutter)
         newTime = derived;
       }
 
-      // Handle clip boundary transition — find nearest next video clip across all layers
-      // Guard: only fire once per clip boundary (prevents repeated src-assignment causing stutter)
-      if (newTime !== undefined && newTime >= clip.endTime - 0.02 && project && _lastBoundaryClipId !== clip.id) {
-        _lastBoundaryClipId = clip.id;
-        let nextClip = null;
-        for (const layer of project.layers) {
-          if (layer.visible === false) continue;
-          layer.clips.forEach(c => {
-            if (c.type === 'video' && c.startTime >= clip.endTime) {
-              if (!nextClip || c.startTime < nextClip.startTime) nextClip = c;
-            }
-          });
+      if (newTime !== undefined && project) {
+        const nextClip = findNextVideoClip(project, clip);
+
+        // Pre-roll: start loading the standby element ~1.5 s before the boundary
+        if (nextClip && newTime >= clip.endTime - 1.5) {
+          preloadNextClip(nextClip);
         }
-        if (nextClip) {
-          if (videoEl.getAttribute('data-clip-src') !== nextClip.src) {
-            videoEl.src = nextClip.src;
-            videoEl.setAttribute('data-clip-src', nextClip.src);
-          }
-          videoEl.currentTime = nextClip.srcStart;
-          videoEl.play().catch(() => {});
+
+        // Boundary transition: swap to the pre-loaded standby element
+        if (newTime >= clip.endTime - 0.02 && _lastBoundaryClipId !== clip.id) {
+          _lastBoundaryClipId = clip.id;
+          if (nextClip) switchToNextClip(nextClip);
         }
       }
     } else {
-      // Timer-driven fallback (subtitle-only sections)
+      // Timer-driven fallback: no active video clip (subtitle-only section) or video not ready
       if (lastTimestamp !== null) newTime = t + (ts - lastTimestamp) / 1000;
     }
 
@@ -194,8 +247,11 @@ const Player = (() => {
 
     if (newTime !== undefined) {
       const dur = EditorState.getTotalDuration();
-      if (newTime >= dur) { EditorState.setCurrentTime(0); EditorState.setPlaying(false); return; }
-      // setCurrentTime → onTimeChanged checks isPlaying() and skips syncVideoToTime
+      if (newTime >= dur) {
+        EditorState.setCurrentTime(0);
+        EditorState.setPlaying(false);
+        return;
+      }
       EditorState.setCurrentTime(newTime);
     }
 
@@ -212,11 +268,10 @@ const Player = (() => {
     ctx.fillStyle = '#111';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-    // 2. Content is drawn in pan-translated space
+    // 2. Content drawn in pan-translated space
     ctx.save();
     ctx.translate(_panX, _panY);
 
-    // Output frame in content space (WS_MARGIN offsets, no pan needed here)
     const ofx = WS_MARGIN * _zoom, ofy = WS_MARGIN * _zoom;
     const ofw = OUTPUT_W * _zoom,   ofh = OUTPUT_H * _zoom;
     ctx.fillStyle = '#000';
@@ -246,20 +301,15 @@ const Player = (() => {
 
     ctx.restore();
 
-    // 3. Dim overlay — drawn in screen space after restore.
-    //    Output frame in screen coords = content coords + pan offset.
+    // 3. Dim overlay in screen space (output frame coords + pan offset)
     const sfx = ofx + _panX, sfy = ofy + _panY;
     const sfw = ofw, sfh = ofh;
 
     ctx.fillStyle = 'rgba(0,0,0,0.58)';
-    // Top
     const topH = Math.max(0, Math.min(sfy, canvas.height));
     if (topH > 0) ctx.fillRect(0, 0, canvas.width, topH);
-    // Bottom
     const botY = Math.max(0, Math.min(sfy + sfh, canvas.height));
-    const botH = canvas.height - botY;
-    if (botH > 0) ctx.fillRect(0, botY, canvas.width, botH);
-    // Left & Right (only in output frame Y band, clamped to canvas)
+    if (canvas.height - botY > 0) ctx.fillRect(0, botY, canvas.width, canvas.height - botY);
     const oy1 = Math.max(0, Math.min(sfy, canvas.height));
     const oy2 = Math.max(0, Math.min(sfy + sfh, canvas.height));
     const oH  = oy2 - oy1;
@@ -267,10 +317,8 @@ const Player = (() => {
       const leftW = Math.max(0, Math.min(sfx, canvas.width));
       if (leftW > 0) ctx.fillRect(0, oy1, leftW, oH);
       const rightX = Math.max(0, Math.min(sfx + sfw, canvas.width));
-      const rightW = canvas.width - rightX;
-      if (rightW > 0) ctx.fillRect(rightX, oy1, rightW, oH);
+      if (canvas.width - rightX > 0) ctx.fillRect(rightX, oy1, canvas.width - rightX, oH);
     }
-    // Re-draw output frame border above the overlay
     ctx.strokeStyle = 'rgba(255,255,255,0.45)';
     ctx.lineWidth   = 1;
     ctx.strokeRect(sfx + 0.5, sfy + 0.5, sfw - 1, sfh - 1);
@@ -304,7 +352,7 @@ const Player = (() => {
 
     const dx   = (WS_MARGIN + (clip.x || 0)) * z, dy = (WS_MARGIN + (clip.y || 0)) * z;
     const dw   = (clip.width  || OUTPUT_W) * z, dh = (clip.height || OUTPUT_H) * z;
-    const srcW = videoEl.videoWidth,            srcH = videoEl.videoHeight;
+    const srcW = videoEl.videoWidth,             srcH = videoEl.videoHeight;
     const fit  = clip.fit || 'cover';
 
     ctx.save();
@@ -321,7 +369,7 @@ const Player = (() => {
         ctx.save(); ctx.beginPath(); ctx.rect(dx, dy, dw, dh); ctx.clip();
         ctx.drawImage(videoEl, sx, sy, sw, sh, dx, dy, dw, dh);
         ctx.restore();
-      } else { // contain
+      } else {
         ctx.fillStyle = '#000'; ctx.fillRect(dx, dy, dw, dh);
         if (sa > da) { const h = dw / sa; ctx.drawImage(videoEl, dx, dy + (dh - h) / 2, dw, h); }
         else         { const w = dh * sa; ctx.drawImage(videoEl, dx + (dw - w) / 2, dy, w, dh); }
@@ -385,7 +433,6 @@ const Player = (() => {
     ];
   }
 
-  // Handle positions are in screen space (pan offset applied)
   function drawHandles(bounds, z) {
     const px = (bounds.x + WS_MARGIN) * z + _panX;
     const py = (bounds.y + WS_MARGIN) * z + _panY;
@@ -433,11 +480,9 @@ const Player = (() => {
 
   function canvasXY(e) {
     const r = canvas.getBoundingClientRect();
-    // canvas CSS size == internal resolution (set by resizeCanvas), so scale is 1:1
     return { cx: e.clientX - r.left, cy: e.clientY - r.top };
   }
 
-  // Convert canvas pixel → output-space coordinate (accounts for pan + zoom)
   function toOutput(cx, cy) {
     return { x: (cx - _panX) / _zoom - WS_MARGIN, y: (cy - _panY) / _zoom - WS_MARGIN };
   }
