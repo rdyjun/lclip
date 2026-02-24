@@ -16,11 +16,8 @@ const Player = (() => {
   const WS_MARGIN = 150; // workspace margin in output pixels around the output frame
   const HANDLE_PX = 7;  // handle half-size in canvas pixels
 
-  // Pan state
-  let _panX = 0, _panY = 0;         // current pan offset in canvas pixels
-  let _isPanMode  = false;           // spacebar held
-  let _isPanning  = false;           // actively dragging to pan
-  let _panStart   = null;            // { x, y, panX, panY } when pan drag started
+  // Pan offset — tracks view position; updated only by centerView() (zoom keeps frame centered)
+  let _panX = 0, _panY = 0;
 
   // Drag state for canvas-based clip editing
   let previewDrag = null;
@@ -425,28 +422,13 @@ const Player = (() => {
     window.addEventListener('mousemove', onMouseMove);
     window.addEventListener('mouseup',   onMouseUp);
 
-    // Spacebar pan mode — registered on document BEFORE editor.js keydown listener,
-    // so stopImmediatePropagation() prevents the play/pause shortcut while panning.
-    document.addEventListener('keydown', e => {
-      if (e.repeat) return;
-      if (e.code === 'Space' &&
-          e.target.tagName !== 'INPUT' &&
-          e.target.tagName !== 'TEXTAREA' &&
-          e.target.tagName !== 'SELECT') {
-        e.preventDefault();
-        e.stopImmediatePropagation();
-        _isPanMode = true;
-        canvas.style.cursor = 'grab';
-      }
-    });
-    document.addEventListener('keyup', e => {
-      if (e.code === 'Space') {
-        _isPanMode  = false;
-        _isPanning  = false;
-        _panStart   = null;
-        canvas.style.cursor = 'default';
-      }
-    });
+    // Ctrl+scroll → zoom, keeping the output frame centered
+    canvas.addEventListener('wheel', e => {
+      if (!e.ctrlKey) return;
+      e.preventDefault();
+      const delta = e.deltaY < 0 ? 0.05 : -0.05;
+      setZoom(Math.max(0.05, Math.min(4, _zoom + delta)));
+    }, { passive: false });
   }
 
   function canvasXY(e) {
@@ -473,15 +455,6 @@ const Player = (() => {
 
   function onMouseDown(e) {
     if (e.button !== 0) return;
-
-    // ── Pan mode (spacebar held) ──
-    if (_isPanMode) {
-      _isPanning = true;
-      _panStart  = { x: e.clientX, y: e.clientY, panX: _panX, panY: _panY };
-      canvas.style.cursor = 'grabbing';
-      e.preventDefault();
-      return;
-    }
 
     const { cx, cy } = canvasXY(e);
     const { x: ox, y: oy } = toOutput(cx, cy);
@@ -526,14 +499,6 @@ const Player = (() => {
   }
 
   function onMouseMove(e) {
-    // ── Pan drag ──
-    if (_isPanning && _panStart) {
-      _panX = _panStart.panX + (e.clientX - _panStart.x);
-      _panY = _panStart.panY + (e.clientY - _panStart.y);
-      renderFrame();
-      return;
-    }
-
     if (!previewDrag) return;
     const { cx, cy } = canvasXY(e);
     const { x: ox, y: oy } = toOutput(cx, cy);
@@ -584,19 +549,9 @@ const Player = (() => {
     renderFrame();
   }
 
-  function onMouseUp() {
-    if (_isPanning) {
-      _isPanning = false;
-      _panStart  = null;
-      canvas.style.cursor = _isPanMode ? 'grab' : 'default';
-      return;
-    }
-    previewDrag = null;
-  }
+  function onMouseUp() { previewDrag = null; }
 
   function onCanvasHover(e) {
-    if (_isPanning) { canvas.style.cursor = 'grabbing'; return; }
-    if (_isPanMode)  { canvas.style.cursor = 'grab';     return; }
     if (previewDrag) { canvas.style.cursor = 'grabbing'; return; }
 
     const { cx, cy } = canvasXY(e);
