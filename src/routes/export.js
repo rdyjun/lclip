@@ -19,11 +19,23 @@ router.post('/:projectId', async (req, res) => {
     Projects.update(project.id, { exportStatus: 'processing', exportFile: null });
     res.json({ status: 'processing', message: 'Export started' });
 
+    // Progress callback — throttled to 1 DB write/second
+    let lastProgressWrite = 0;
+    const onProgress = (percent, message) => {
+      const now = Date.now();
+      if (now - lastProgressWrite > 1000) {
+        lastProgressWrite = now;
+        Projects.update(project.id, { exportProgress: percent, exportProgressMsg: message });
+      }
+    };
+
     // Process video
-    exportVideo(project, outputPath)
+    exportVideo(project, outputPath, onProgress)
       .then(() => {
         Projects.update(project.id, {
           exportStatus: 'done',
+          exportProgress: 100,
+          exportProgressMsg: '완료',
           exportFile: `/exports/${outputFilename}`
         });
         console.log(`Export done: ${outputFilename}`);
@@ -43,9 +55,11 @@ router.get('/:projectId/status', (req, res) => {
   const project = Projects.findById(req.params.projectId);
   if (!project) return res.status(404).json({ error: 'Project not found' });
   res.json({
-    status: project.exportStatus || 'idle',
-    file: project.exportFile || null,
-    error: project.exportError || null
+    status:   project.exportStatus    || 'idle',
+    progress: project.exportProgress  || 0,
+    message:  project.exportProgressMsg || '',
+    file:     project.exportFile      || null,
+    error:    project.exportError     || null,
   });
 });
 

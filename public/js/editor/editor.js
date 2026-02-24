@@ -251,6 +251,7 @@
 
     document.getElementById('btn-start-export').disabled = true;
     document.getElementById('export-progress-bar').style.display = 'block';
+    document.getElementById('export-progress-fill').style.width = '0%';
     document.getElementById('export-status-text').textContent = '렌더링 시작 중...';
 
     try {
@@ -262,27 +263,38 @@
   });
 
   function pollExportStatus(projectId) {
+    const fill     = document.getElementById('export-progress-fill');
+    const statusTx = document.getElementById('export-status-text');
+
     const interval = setInterval(async () => {
       try {
         const status = await fetch(`/api/export/${projectId}/status`).then(r => r.json());
         if (status.status === 'done') {
           clearInterval(interval);
-          document.getElementById('export-progress-bar').style.display = 'none';
-          document.getElementById('export-status-area').style.display = 'none';
-          document.getElementById('export-download-area').style.display = 'block';
-          const link = document.getElementById('export-download-link');
-          link.href = status.file;
-          link.textContent = '영상 다운로드';
+          fill.style.width = '100%';
+          setTimeout(() => {
+            document.getElementById('export-progress-bar').style.display = 'none';
+            document.getElementById('export-status-area').style.display = 'none';
+            document.getElementById('export-download-area').style.display = 'block';
+            const link = document.getElementById('export-download-link');
+            link.href = status.file;
+            link.textContent = '영상 다운로드';
+          }, 400);
         } else if (status.status === 'error') {
           clearInterval(interval);
-          document.getElementById('export-status-text').textContent = '오류: ' + status.error;
+          statusTx.textContent = '오류: ' + status.error;
+          fill.style.background = 'var(--danger, #e05)';
         } else {
-          document.getElementById('export-status-text').textContent = '렌더링 중...';
+          const pct = status.progress || 0;
+          fill.style.width = pct + '%';
+          statusTx.textContent = status.message
+            ? `${status.message} (${pct}%)`
+            : `렌더링 중... ${pct}%`;
         }
       } catch (err) {
         clearInterval(interval);
       }
-    }, 2000);
+    }, 1500);
   }
 
   // ── Audio Modal ───────────────────────────────────────────────────────────────

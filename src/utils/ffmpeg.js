@@ -39,6 +39,9 @@ function getVideoInfo(filePath) {
   });
 }
 
+// Round down to nearest even number (≥2). libx264 + yuv420p requires even W/H.
+const evenFloor = n => Math.max(2, n % 2 === 0 ? n : n - 1);
+
 // Compute the spatial filter (crop + scale) for a video clip and the overlay
 // position on the output canvas.  Works for cover / contain / fill fit modes.
 // Returns { scaleFilter, fw, fh, overlayX, overlayY }.
@@ -50,11 +53,12 @@ function computeClipFilter(clip, srcW, srcH, outputWidth, outputHeight) {
   const cy     = clip.y || 0;
 
   if (fit === 'cover' && srcW > 0 && srcH > 0) {
-    // Visible region of the clip on the output canvas (display coordinates)
+    // Visible region of the clip on the output canvas (display coordinates).
+    // evenFloor ensures the scale target is divisible by 2 (yuv420p requirement).
     const fx = Math.max(0, -cx);
     const fy = Math.max(0, -cy);
-    const fw = Math.max(1, Math.min(outputWidth,  cx + scaleW) - Math.max(0, cx));
-    const fh = Math.max(1, Math.min(outputHeight, cy + scaleH) - Math.max(0, cy));
+    const fw = evenFloor(Math.max(1, Math.min(outputWidth,  cx + scaleW) - Math.max(0, cx)));
+    const fh = evenFloor(Math.max(1, Math.min(outputHeight, cy + scaleH) - Math.max(0, cy)));
 
     // Cover maps source → display by scaling to the axis that fills both dims.
     // force_original_aspect_ratio=increase picks the larger scale factor, then
@@ -95,7 +99,10 @@ function computeClipFilter(clip, srcW, srcH, outputWidth, outputHeight) {
   return { scaleFilter, fw: scaleW, fh: scaleH, overlayX: cx, overlayY: cy };
 }
 
-async function exportVideo(project, outputPath) {
+// onProgress(percent 0-100, message) — called during export to report progress.
+// Phase 1 (clip extraction): 0 → 60 %.
+// Phase 2 (compositing):     60 → 100 %.
+async function exportVideo(project, outputPath, onProgress = null) {
   const { layers, outputWidth = 1080, outputHeight = 1920, fps = 30 } = project;
 
   // Collect clips by type across ALL layers, respecting visibility.
@@ -177,7 +184,11 @@ async function exportVideo(project, outputPath) {
         : '';
       const maps = hasAudio ? ['ov', 'oa'] : ['ov'];
 
-      console.log(`Extracting clip ${i + 1}/${resolvedVideoClips.length} → ${path.basename(tempFile)}`);
+      const n = resolvedVideoClips.length;
+      const msg = `클립 추출 중 (${i + 1}/${n})`;
+      console.log(`Extracting clip ${i + 1}/${n} → ${path.basename(tempFile)}`);
+      onProgress?.(Math.round(i / n * 60), msg);
+
       await new Promise((resolve, reject) => {
         ffmpeg()
           .input(clip.srcPath)
@@ -188,11 +199,16 @@ async function exportVideo(project, outputPath) {
             ...(hasAudio ? ['-c:a aac', '-b:a 192k'] : ['-an']),
           ])
           .output(tempFile)
+          .on('stderr', line => console.error(`[clip ${i}] ${line}`))
           .on('end', resolve)
-          .on('error', reject)
+          .on('error', (err, stdout, stderr) => {
+            console.error(`Clip ${i} extraction failed:\n${stderr}`);
+            reject(err);
+          })
           .run();
       });
 
+      onProgress?.(Math.round((i + 1) / n * 60), msg);
       tempClips.push({ file: tempFile, clip, fw, fh, overlayX, overlayY, hasAudio });
     }
 
@@ -314,7 +330,11 @@ async function exportVideo(project, outputPath) {
         .outputOptions(outputOpts)
         .output(outputPath)
         .on('start', cmd => console.log('FFmpeg composite started:', cmd))
-        .on('progress', p => console.log(`Export progress: ${Math.round(p.percent || 0)}%`))
+        .on('progress', p => {
+          const pct = Math.min(99, 60 + Math.round((p.percent || 0) * 0.4));
+          onProgress?.(pct, '합성 렌더링 중');
+          console.log(`Export progress: ${pct}%`);
+        })
         .on('end', resolve)
         .on('error', reject)
         .run();
