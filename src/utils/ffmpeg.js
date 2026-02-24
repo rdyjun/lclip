@@ -39,163 +39,193 @@ function getVideoInfo(filePath) {
   });
 }
 
-async function exportVideo(project, outputPath) {
-    const { layers, outputWidth = 1080, outputHeight = 1920, fps = 30 } = project;
+// Compute the spatial filter (crop + scale) for a video clip and the overlay
+// position on the output canvas.  Works for cover / contain / fill fit modes.
+// Returns { scaleFilter, fw, fh, overlayX, overlayY }.
+function computeClipFilter(clip, srcW, srcH, outputWidth, outputHeight) {
+  const scaleW = clip.width  || outputWidth;
+  const scaleH = clip.height || outputHeight;
+  const fit    = clip.fit    || 'cover';
+  const cx     = clip.x || 0;
+  const cy     = clip.y || 0;
 
-    // Collect clips by type across ALL layers (not restricted to layer.type)
-    // Bug fix: apply visibility filter consistently across all clip types
-    const allVideoClips = layers
-      .filter(l => l.visible !== false)
-      .flatMap(l => l.clips.filter(c => c.type === 'video'))
-      .sort((a, b) => a.startTime - b.startTime);
+  if (fit === 'cover' && srcW > 0 && srcH > 0) {
+    // Visible region of the clip on the output canvas (display coordinates)
+    const fx = Math.max(0, -cx);
+    const fy = Math.max(0, -cy);
+    const fw = Math.max(1, Math.min(outputWidth,  cx + scaleW) - Math.max(0, cx));
+    const fh = Math.max(1, Math.min(outputHeight, cy + scaleH) - Math.max(0, cy));
 
-    const allSubtitleClips = layers
-      .filter(l => l.visible !== false)
-      .flatMap(l => l.clips.filter(c => c.type === 'subtitle'));
-
-    const allAudioClips = layers
-      .filter(l => l.visible !== false)
-      .flatMap(l => l.clips.filter(c => c.type === 'audio' && c.src));
-
-    if (!allVideoClips.length) {
-      throw new Error('No video clips found');
+    // Cover maps source → display by scaling to the axis that fills both dims.
+    // force_original_aspect_ratio=increase picks the larger scale factor, then
+    // the other axis is cropped from the center.
+    const srcAspect = srcW / srcH;
+    const tgtAspect = scaleW / scaleH;
+    let sf, offX, offY;
+    if (srcAspect >= tgtAspect) {
+      sf   = scaleH / srcH;
+      offX = (srcW * sf - scaleW) / 2;
+      offY = 0;
+    } else {
+      sf   = scaleW / srcW;
+      offX = 0;
+      offY = (srcH * sf - scaleH) / 2;
     }
 
-    // Resolve source paths and probe audio streams for all video clips up front.
-    // This prevents [i:a] filter references from crashing FFmpeg when a clip has no audio.
-    const resolvedVideoClips = allVideoClips.map(clip => {
-      let srcPath;
-      const streamMatch = clip.src && clip.src.match(/\/api\/videos\/stream\/([^/]+)/);
-      if (streamMatch) {
-        const video = Videos.findById(streamMatch[1]);
-        if (video) {
-          srcPath = video.isLocal
-            ? video.localPath
-            : path.join(config.UPLOADS_DIR, '..', (video.path || '').replace(/^\//, ''));
-        }
+    // Reverse-map the visible display region back to source pixel coordinates.
+    const srcCropX = Math.max(0, (fx + offX) / sf);
+    const srcCropY = Math.max(0, (fy + offY) / sf);
+    const srcCropW = Math.max(1, Math.min(srcW - srcCropX, fw / sf));
+    const srcCropH = Math.max(1, Math.min(srcH - srcCropY, fh / sf));
+
+    const scaleFilter =
+      `crop=${Math.round(srcCropW)}:${Math.round(srcCropH)}:` +
+      `${Math.round(srcCropX)}:${Math.round(srcCropY)},` +
+      `scale=${fw}:${fh}:flags=bilinear`;
+    return { scaleFilter, fw, fh, overlayX: Math.max(0, cx), overlayY: Math.max(0, cy) };
+  }
+
+  if (fit === 'contain') {
+    const scaleFilter = `scale=${scaleW}:${scaleH}:force_original_aspect_ratio=decrease,pad=${scaleW}:${scaleH}:(ow-iw)/2:(oh-ih)/2:black`;
+    return { scaleFilter, fw: scaleW, fh: scaleH, overlayX: cx, overlayY: cy };
+  }
+
+  // fill (cover fallback when probe failed, or explicit fill)
+  const scaleFilter = `scale=${scaleW}:${scaleH}:flags=bilinear`;
+  return { scaleFilter, fw: scaleW, fh: scaleH, overlayX: cx, overlayY: cy };
+}
+
+async function exportVideo(project, outputPath) {
+  const { layers, outputWidth = 1080, outputHeight = 1920, fps = 30 } = project;
+
+  // Collect clips by type across ALL layers, respecting visibility.
+  const allVideoClips = layers
+    .filter(l => l.visible !== false)
+    .flatMap(l => l.clips.filter(c => c.type === 'video'))
+    .sort((a, b) => a.startTime - b.startTime);
+
+  const allSubtitleClips = layers
+    .filter(l => l.visible !== false)
+    .flatMap(l => l.clips.filter(c => c.type === 'subtitle'));
+
+  const allAudioClips = layers
+    .filter(l => l.visible !== false)
+    .flatMap(l => l.clips.filter(c => c.type === 'audio' && c.src));
+
+  if (!allVideoClips.length) {
+    throw new Error('No video clips found');
+  }
+
+  // Resolve file paths for all video clips.
+  const resolvedVideoClips = allVideoClips.map(clip => {
+    let srcPath;
+    const streamMatch = clip.src && clip.src.match(/\/api\/videos\/stream\/([^/]+)/);
+    if (streamMatch) {
+      const video = Videos.findById(streamMatch[1]);
+      if (video) {
+        srcPath = video.isLocal
+          ? video.localPath
+          : path.join(config.UPLOADS_DIR, '..', (video.path || '').replace(/^\//, ''));
       }
-      if (!srcPath) srcPath = path.join(config.UPLOADS_DIR, '..', clip.src.replace(/^\//, ''));
-      return { ...clip, srcPath };
-    });
+    }
+    if (!srcPath) srcPath = path.join(config.UPLOADS_DIR, '..', clip.src.replace(/^\//, ''));
+    return { ...clip, srcPath };
+  });
 
-    // Probe each clip for audio presence and source dimensions.
-    // Source dimensions are used to compute the minimal crop region for cover mode,
-    // avoiding processing millions of off-screen pixels.
-    const clipInfo = await Promise.all(
-      resolvedVideoClips.map(clip =>
-        new Promise(res => {
-          ffmpeg.ffprobe(clip.srcPath, (err, meta) => {
-            if (err) return res({ hasAudio: false, srcW: 0, srcH: 0 });
-            const vStream = meta.streams.find(s => s.codec_type === 'video');
-            res({
-              hasAudio: meta.streams.some(s => s.codec_type === 'audio'),
-              srcW: vStream ? vStream.width  : 0,
-              srcH: vStream ? vStream.height : 0,
-            });
+  // Probe each clip once for audio presence and source video dimensions.
+  const clipInfo = await Promise.all(
+    resolvedVideoClips.map(clip =>
+      new Promise(res => {
+        ffmpeg.ffprobe(clip.srcPath, (err, meta) => {
+          if (err) return res({ hasAudio: false, srcW: 0, srcH: 0 });
+          const vStream = meta.streams.find(s => s.codec_type === 'video');
+          res({
+            hasAudio: meta.streams.some(s => s.codec_type === 'audio'),
+            srcW: vStream ? vStream.width  : 0,
+            srcH: vStream ? vStream.height : 0,
           });
-        })
-      )
-    );
+        });
+      })
+    )
+  );
 
+  const totalDuration = allVideoClips.reduce((max, c) => Math.max(max, c.endTime), 0);
+
+  // ── Phase 1: Extract each clip to a local temp file (sequential) ───────────
+  // Running clips one-at-a-time avoids concurrent reads from NAS/slow storage,
+  // which causes I/O saturation and stalls the FFmpeg filter graph.
+  const tempDir = outputPath + '_clips';
+  await fs.ensureDir(tempDir);
+
+  const tempClips = []; // { file, clip, fw, fh, overlayX, overlayY, hasAudio }
+  try {
+    for (let i = 0; i < resolvedVideoClips.length; i++) {
+      const clip = resolvedVideoClips[i];
+      const { srcW, srcH, hasAudio } = clipInfo[i];
+      const { scaleFilter, fw, fh, overlayX, overlayY } =
+        computeClipFilter(clip, srcW, srcH, outputWidth, outputHeight);
+
+      const tempFile  = path.join(tempDir, `clip_${i}.mp4`);
+      const seekStart = Math.max(0, clip.srcStart - 5);
+
+      // Build per-clip filter: trim to source range, reset PTS, crop+scale.
+      const vFilter =
+        `[0:v]trim=start=${clip.srcStart}:end=${clip.srcEnd},` +
+        `setpts=PTS-STARTPTS,${scaleFilter}[ov]`;
+      const aFilter = hasAudio
+        ? `;[0:a]atrim=start=${clip.srcStart}:end=${clip.srcEnd},asetpts=PTS-STARTPTS[oa]`
+        : '';
+      const maps = hasAudio ? ['ov', 'oa'] : ['ov'];
+
+      console.log(`Extracting clip ${i + 1}/${resolvedVideoClips.length} → ${path.basename(tempFile)}`);
+      await new Promise((resolve, reject) => {
+        ffmpeg()
+          .input(clip.srcPath)
+          .inputOptions(['-ss ' + seekStart.toFixed(3)])
+          .complexFilter(vFilter + aFilter, maps)
+          .outputOptions([
+            '-c:v libx264', '-preset ultrafast', '-crf 10',
+            ...(hasAudio ? ['-c:a aac', '-b:a 192k'] : ['-an']),
+          ])
+          .output(tempFile)
+          .on('end', resolve)
+          .on('error', reject)
+          .run();
+      });
+
+      tempClips.push({ file: tempFile, clip, fw, fh, overlayX, overlayY, hasAudio });
+    }
+
+    // ── Phase 2: Composite from temp files (fast local disk I/O) ─────────────
     const cmd = ffmpeg();
-    const inputs = [];
     const filterParts = [];
-
-    const totalDuration = allVideoClips.reduce((max, c) => Math.max(max, c.endTime), 0);
+    const audioFilterParts = [];
+    const allAudioLabels   = [];
 
     filterParts.push(
       `color=c=black:size=${outputWidth}x${outputHeight}:duration=${totalDuration}:rate=${fps}[bg]`
     );
 
+    // Video clips — each temp file has PTS starting at 0; shift to timeline pos.
     let currentBase = '[bg]';
-    resolvedVideoClips.forEach((clip, i) => {
-      const { srcPath } = clip;
-      const { srcW, srcH } = clipInfo[i];
+    tempClips.forEach(({ file, clip, overlayX, overlayY, hasAudio }, i) => {
+      cmd.input(file);
 
-      // Fast seek: position FFmpeg near the trim start instead of decoding from 0.
-      // -ss as input option does a keyframe seek (cheap); trim filter still uses
-      // absolute source PTS because accurate_seek (default) preserves them.
-      const seekStart = Math.max(0, clip.srcStart - 5);
-      cmd.input(srcPath);
-      cmd.inputOptions('-ss ' + seekStart.toFixed(3));
-      const inputIdx = inputs.length;
-      inputs.push(srcPath);
-
-      const scaleW = clip.width  || outputWidth;
-      const scaleH = clip.height || outputHeight;
-      const fit    = clip.fit    || 'cover';
-      const cx     = clip.x || 0;
-      const cy     = clip.y || 0;
-
-      // Fit-aware scale filter — preserves aspect ratio as in the editor preview.
-      // For cover mode we compute the minimal source crop that covers the VISIBLE
-      // canvas region, avoiding decoding/scaling millions of off-screen pixels.
-      let scaleFilter;
-      let overlayX = cx;
-      let overlayY = cy;
-
-      if (fit === 'cover' && srcW > 0 && srcH > 0) {
-        // Visible region of the clip on the output canvas (display coordinates)
-        const fx = Math.max(0, -cx);
-        const fy = Math.max(0, -cy);
-        const fw = Math.max(1, Math.min(outputWidth,  cx + scaleW) - Math.max(0, cx));
-        const fh = Math.max(1, Math.min(outputHeight, cy + scaleH) - Math.max(0, cy));
-
-        // Cover maps source → display by scaling to the axis that fills both dims.
-        // force_original_aspect_ratio=increase picks the larger of the two scale
-        // factors, then the other axis is cropped from the center.
-        const srcAspect = srcW / srcH;
-        const tgtAspect = scaleW / scaleH;
-        let sf, offX, offY; // pixel offset of the scaleW×scaleH window inside the scaled source
-        if (srcAspect >= tgtAspect) {
-          // source wider → scale to height, crop left/right symmetrically
-          sf   = scaleH / srcH;
-          offX = (srcW * sf - scaleW) / 2;
-          offY = 0;
-        } else {
-          // source taller → scale to width, crop top/bottom symmetrically
-          sf   = scaleW / srcW;
-          offX = 0;
-          offY = (srcH * sf - scaleH) / 2;
-        }
-
-        // Reverse-map the visible display region back to source pixel coordinates
-        const srcCropX = Math.max(0, (fx + offX) / sf);
-        const srcCropY = Math.max(0, (fy + offY) / sf);
-        const srcCropW = Math.max(1, Math.min(srcW - srcCropX, fw / sf));
-        const srcCropH = Math.max(1, Math.min(srcH - srcCropY, fh / sf));
-
-        // Crop source to only the visible portion, then scale that small region
-        // to the display size. This avoids upscaling huge frames that mostly fall
-        // outside the canvas (e.g. 5575×3128 → 1080×1920 saves ~17× pixel work).
-        scaleFilter =
-          `crop=${Math.round(srcCropW)}:${Math.round(srcCropH)}:` +
-          `${Math.round(srcCropX)}:${Math.round(srcCropY)},` +
-          `scale=${fw}:${fh}:flags=bilinear`;
-        overlayX = Math.max(0, cx);
-        overlayY = Math.max(0, cy);
-      } else if (fit === 'cover') {
-        // Probe failed — fall back to original approach
-        scaleFilter = `scale=${scaleW}:${scaleH}:force_original_aspect_ratio=increase,crop=${scaleW}:${scaleH}`;
-      } else if (fit === 'contain') {
-        scaleFilter = `scale=${scaleW}:${scaleH}:force_original_aspect_ratio=decrease,pad=${scaleW}:${scaleH}:(ow-iw)/2:(oh-ih)/2:black`;
-      } else {
-        // fill — stretch to display size
-        scaleFilter = `scale=${scaleW}:${scaleH}:flags=bilinear`;
-      }
-
-      // KEY FIX: offset PTS to the output timeline position.
-      // Without this, PTS starts at 0 for each trimmed clip and the overlay
-      // consumes all frames before the enable condition becomes true → frozen frame.
+      // KEY: shift clip PTS to its output timeline position so the overlay filter
+      // receives frames at the right time.  enable= guards pass-through before/after.
+      filterParts.push(`[${i}:v]setpts=PTS+${clip.startTime}/TB[tv${i}]`);
       filterParts.push(
-        `[${inputIdx}:v]trim=start=${clip.srcStart}:end=${clip.srcEnd},` +
-        `setpts=PTS-STARTPTS+(${clip.startTime}/TB),${scaleFilter}[v${i}]`
-      );
-      filterParts.push(
-        `${currentBase}[v${i}]overlay=x=${overlayX}:y=${overlayY}` +
+        `${currentBase}[tv${i}]overlay=x=${overlayX}:y=${overlayY}` +
         `:enable='between(t,${clip.startTime},${clip.endTime})'[base${i}]`
       );
       currentBase = `[base${i}]`;
+
+      if (hasAudio) {
+        const delayMs = Math.round(clip.startTime * 1000);
+        // Temp file audio is already trimmed to clip duration; just delay to position.
+        audioFilterParts.push(`[${i}:a]adelay=${delayMs}:all=1[av${i}]`);
+        allAudioLabels.push(`[av${i}]`);
+      }
     });
 
     // Subtitle drawtext filters
@@ -203,13 +233,12 @@ async function exportVideo(project, outputPath) {
     let subtitleIdx  = 0;
     allSubtitleClips.forEach(clip => {
       if (!clip.text) return;
-      // % must be doubled to prevent FFmpeg drawtext from treating it as a strftime format
+      // % must be doubled to prevent FFmpeg drawtext strftime misinterpretation
       const escaped  = clip.text.replace(/%/g, '%%').replace(/'/g, "\\'").replace(/:/g, '\\:').replace(/\n/g, '\\n');
       const colorHex = rgbToFFmpegColor(clip.color || '#ffffff');
       const fontSize = clip.fontSize || 48;
       const fontFile = getFontPath(clip.bold, clip.fontFamily);
 
-      // x: match canvas preview where clip.x is the text anchor point per alignment
       const align = clip.align || 'center';
       let xExpr;
       if (align === 'left') {
@@ -217,11 +246,9 @@ async function exportVideo(project, outputPath) {
       } else if (align === 'right') {
         xExpr = `${clip.x ?? outputWidth}-(text_w)`;
       } else {
-        // center: anchor at clip.x (default = horizontal center of canvas)
         xExpr = `${clip.x || Math.round(outputWidth / 2)}-(text_w/2)`;
       }
 
-      // Background box (matches canvas roundRect in preview; border-radius not supported by drawtext)
       let boxStr = '';
       const bgColor = clip.backgroundColor;
       if (bgColor && bgColor !== 'none') {
@@ -241,31 +268,11 @@ async function exportVideo(project, outputPath) {
       subtitleIdx++;
     });
 
-    // Audio inputs (background music)
-    allAudioClips.forEach(clip => {
+    // Background audio inputs (follow temp clip inputs)
+    const bgAudioOffset = tempClips.length;
+    allAudioClips.forEach((clip, i) => {
       const audioPath = path.join(config.UPLOADS_DIR, '..', clip.src.replace(/^\//, ''));
       cmd.input(audioPath);
-    });
-
-    // ── Audio filter chain ──────────────────────────────────────────────────
-    const audioFilterParts = [];
-    const allAudioLabels   = [];
-
-    // Only add [i:a] for clips that actually have an audio stream.
-    // Without this guard, FFmpeg crashes when a video-only file is used.
-    resolvedVideoClips.forEach((clip, i) => {
-      if (!clipInfo[i].hasAudio) return;
-      const delayMs = Math.round(clip.startTime * 1000);
-      audioFilterParts.push(
-        `[${i}:a]atrim=start=${clip.srcStart}:end=${clip.srcEnd},` +
-        `asetpts=PTS-STARTPTS,adelay=${delayMs}:all=1[av${i}]`
-      );
-      allAudioLabels.push(`[av${i}]`);
-    });
-
-    // Background music inputs follow video clip inputs
-    const bgAudioOffset = allVideoClips.length;
-    allAudioClips.forEach((clip, i) => {
       const vol = clip.volume !== undefined ? clip.volume : 0.8;
       audioFilterParts.push(`[${bgAudioOffset + i}:a]volume=${vol}[abg${i}]`);
       allAudioLabels.push(`[abg${i}]`);
@@ -282,8 +289,8 @@ async function exportVideo(project, outputPath) {
       audioMapLabel = 'amixed';
     }
 
-    // ── Build final filter graph ────────────────────────────────────────────
-    const filterGraph    = [...filterParts, ...audioFilterParts].join(';');
+    // Build final filter graph
+    const filterGraph     = [...filterParts, ...audioFilterParts].join(';');
     const finalVideoLabel = (subtitleIdx > 0 ? subtitleBase : currentBase).replace(/[\[\]]/g, '');
     const mapLabels       = audioMapLabel ? [finalVideoLabel, audioMapLabel] : [finalVideoLabel];
 
@@ -301,17 +308,22 @@ async function exportVideo(project, outputPath) {
       outputOpts.push('-an');
     }
 
-    return new Promise((resolve, reject) => {
+    await new Promise((resolve, reject) => {
       cmd
         .complexFilter(filterGraph, mapLabels)
         .outputOptions(outputOpts)
         .output(outputPath)
-        .on('start', cmd => console.log('FFmpeg started:', cmd))
+        .on('start', cmd => console.log('FFmpeg composite started:', cmd))
         .on('progress', p => console.log(`Export progress: ${Math.round(p.percent || 0)}%`))
         .on('end', resolve)
         .on('error', reject)
         .run();
     });
+
+  } finally {
+    // Always clean up temp files even if export fails
+    await fs.remove(tempDir);
+  }
 }
 
 function rgbToFFmpegColor(hex) {
