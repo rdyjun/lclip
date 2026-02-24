@@ -40,6 +40,13 @@ app.use('/vendor/ffmpeg',
 app.use('/vendor/ffmpeg-core',
   express.static(path.join(__dirname, 'node_modules/@ffmpeg/core/dist/umd')));
 
+// Serve shared defaults as a browser global
+app.get('/api/defaults.js', (req, res) => {
+  const defaults = require('./src/config/defaults');
+  res.type('application/javascript');
+  res.send(`window.APP_DEFAULTS=${JSON.stringify(defaults)};`);
+});
+
 // Routes
 const videosRouter   = require('./src/routes/videos');
 const projectsRouter = require('./src/routes/projects');

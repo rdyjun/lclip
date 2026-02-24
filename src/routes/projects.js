@@ -4,6 +4,7 @@ const multer = require('multer');
 const path = require('path');
 const { Projects, Videos, uuidv4 } = require('../models/db');
 const config = require('../config');
+const defaults = require('../config/defaults');
 
 const audioStorage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, path.join(config.UPLOADS_DIR, 'audio')),
@@ -90,6 +91,9 @@ router.post('/:id/audio', uploadAudio.single('audio'), (req, res) => {
 
 function buildDefaultLayers(video) {
   const duration = video.duration || 60;
+  const dv = defaults.video;
+  const ds = defaults.subtitle;
+  const dc = defaults.channelSubtitle;
   return [
     {
       id: uuidv4(),
@@ -108,12 +112,8 @@ function buildDefaultLayers(video) {
           endTime: duration,
           srcStart: 0,
           srcEnd: duration,
-          x: 0,
-          y: 0,
-          width: 1080,
-          height: 1920,
-          scale: 1,
-          opacity: 1
+          x: dv.x, y: dv.y, width: dv.width, height: dv.height,
+          scale: dv.scale, opacity: dv.opacity
         }
       ]
     },
@@ -131,19 +131,8 @@ function buildDefaultLayers(video) {
           text: '여기에 자막을 입력하세요',
           startTime: 0,
           endTime: 5,
-          x: 540,
-          y: 200,
-          fontSize: 56,
-          fontFamily: 'Noto Sans KR, sans-serif',
-          color: '#ffffff',
-          backgroundColor: 'rgba(0,0,0,0.6)',
-          backgroundPadding: 16,
-          borderRadius: 8,
-          align: 'center',
-          bold: true,
-          italic: false,
-          shadow: '2px 2px 4px rgba(0,0,0,0.8)',
-          outline: '2px solid rgba(0,0,0,0.9)'
+          x: 540, y: 200,
+          ...ds
         }
       ]
     },
@@ -161,19 +150,7 @@ function buildDefaultLayers(video) {
           text: '@채널명',
           startTime: 0,
           endTime: duration,
-          x: 540,
-          y: 1780,
-          fontSize: 36,
-          fontFamily: 'Noto Sans KR, sans-serif',
-          color: '#ffffff',
-          backgroundColor: 'rgba(0,0,0,0.4)',
-          backgroundPadding: 12,
-          borderRadius: 6,
-          align: 'center',
-          bold: false,
-          italic: false,
-          shadow: '1px 1px 3px rgba(0,0,0,0.8)',
-          outline: 'none'
+          ...dc
         }
       ]
     },
@@ -199,6 +176,9 @@ function buildRoflLayers(video, roflClips) {
     ? `/api/videos/stream/${video.id}`
     : (video.path || `/api/videos/stream/${video.id}`);
 
+  const dv = defaults.video;
+  const dc = defaults.channelSubtitle;
+
   let timelinePos = 0;
   const videoClips = roflClips.map(seg => {
     const duration = Math.max(0.1, seg.srcEnd - seg.srcStart);
@@ -211,8 +191,8 @@ function buildRoflLayers(video, roflClips) {
       endTime:     timelinePos + duration,
       srcStart:    seg.srcStart,
       srcEnd:      seg.srcEnd,
-      x: 0, y: 0, width: 1080, height: 1920,
-      scale: 1, opacity: 1,
+      x: dv.x, y: dv.y, width: dv.width, height: dv.height,
+      scale: dv.scale, opacity: dv.opacity,
       isFiltered:  true,
       filterStart: seg.srcStart,
       filterEnd:   seg.srcEnd,
@@ -240,11 +220,7 @@ function buildRoflLayers(video, roflClips) {
       clips: [{
         id: uuidv4(), type: 'subtitle', text: '@채널명',
         startTime: 0, endTime: totalDuration,
-        x: 540, y: 1780, fontSize: 36,
-        fontFamily: 'Noto Sans KR, sans-serif',
-        color: '#ffffff', backgroundColor: 'rgba(0,0,0,0.4)',
-        backgroundPadding: 12, borderRadius: 6,
-        align: 'center', bold: false, italic: false
+        ...dc
       }]
     },
     {

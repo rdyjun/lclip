@@ -40,17 +40,7 @@ const Layers = (() => {
           endTime: t + 3,
           x: 540,
           y: 300,
-          fontSize: 56,
-          fontFamily: 'Noto Sans KR, sans-serif',
-          color: '#ffffff',
-          backgroundColor: 'rgba(0,0,0,0.6)',
-          backgroundPadding: 16,
-          borderRadius: 8,
-          align: 'center',
-          bold: true,
-          italic: false,
-          shadow: '2px 2px 4px rgba(0,0,0,0.8)',
-          outline: '2px solid rgba(0,0,0,0.9)'
+          ...APP_DEFAULTS.subtitle
         }
       ]
     });
