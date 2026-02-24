@@ -18,6 +18,9 @@ const Player = (() => {
   // Standby pre-load state
   let _preloadClipId = null; // id of the clip currently pre-loaded on the standby element
 
+  // Audio preview elements
+  let _audioEls = {}; // clipId → HTMLAudioElement
+
   const OUTPUT_W = 1080, OUTPUT_H = 1920;
   const WS_MARGIN = 150; // workspace margin in output pixels around the output frame
   const HANDLE_PX = 7;  // handle half-size in canvas pixels
@@ -54,6 +57,8 @@ const Player = (() => {
 
     EditorState.on('projectLoaded',    () => {
       _preloadClipId = null;
+      pauseAllAudio();
+      _audioEls = {};
       syncVideoToTime(EditorState.getCurrentTime());
       renderFrame();
     });
@@ -99,6 +104,7 @@ const Player = (() => {
     if (!EditorState.isPlaying()) {
       // Only sync and render during pause — playLoop manages everything during playback
       syncVideoToTime(t);
+      syncAudioToTime(t);
       renderFrame();
     }
   }
@@ -109,12 +115,14 @@ const Player = (() => {
       _preloadClipId      = null;
       syncVideoToTime(EditorState.getCurrentTime());
       videoEl.play().catch(() => {});
+      startAudioPlayback(EditorState.getCurrentTime());
       lastTimestamp = null;
       animFrameId   = requestAnimationFrame(playLoop);
     } else {
       if (animFrameId) { cancelAnimationFrame(animFrameId); animFrameId = null; }
       videoEl.pause();
       getStandby().pause();
+      pauseAllAudio();
       renderFrame();
     }
   }
@@ -191,6 +199,73 @@ const Player = (() => {
     return next;
   }
 
+  // ── Audio Preview ──────────────────────────────────────────────────────────
+  function getAudioEl(clip) {
+    if (!_audioEls[clip.id]) _audioEls[clip.id] = new Audio();
+    const el = _audioEls[clip.id];
+    if (el.getAttribute('data-src') !== clip.src) {
+      el.src = clip.src;
+      el.setAttribute('data-src', clip.src);
+    }
+    el.volume = clip.volume !== undefined ? clip.volume : 0.8;
+    return el;
+  }
+
+  function getAudioClips() {
+    const project = EditorState.getProject();
+    if (!project) return [];
+    return project.layers
+      .filter(l => l.visible !== false)
+      .flatMap(l => l.clips.filter(c => c.type === 'audio' && c.src));
+  }
+
+  /** Seek audio elements to the correct position without playing (used during pause/seek) */
+  function syncAudioToTime(t) {
+    getAudioClips().forEach(clip => {
+      const el  = getAudioEl(clip);
+      const end = clip.endTime || Infinity;
+      if (t >= clip.startTime && t < end) {
+        const pos = t - clip.startTime;
+        if (Math.abs(el.currentTime - pos) > 0.2) el.currentTime = pos;
+      }
+    });
+  }
+
+  /** Play all audio clips that are active at time t; pause the rest */
+  function startAudioPlayback(t) {
+    getAudioClips().forEach(clip => {
+      const el  = getAudioEl(clip);
+      const end = clip.endTime || Infinity;
+      if (t >= clip.startTime && t < end) {
+        const pos = t - clip.startTime;
+        if (Math.abs(el.currentTime - pos) > 0.2) el.currentTime = pos;
+        el.play().catch(() => {});
+      } else {
+        el.pause();
+      }
+    });
+  }
+
+  function pauseAllAudio() {
+    Object.values(_audioEls).forEach(el => el.pause());
+  }
+
+  /** Called each animation frame — starts/stops audio when crossing clip boundaries */
+  function tickAudio(prevT, t) {
+    getAudioClips().forEach(clip => {
+      const el  = getAudioEl(clip);
+      const end = clip.endTime || Infinity;
+      const isActive  = t     >= clip.startTime && t     < end;
+      const wasActive = prevT >= clip.startTime && prevT < end;
+      if (isActive && !wasActive) {
+        el.currentTime = t - clip.startTime;
+        el.play().catch(() => {});
+      } else if (!isActive && wasActive) {
+        el.pause();
+      }
+    });
+  }
+
   // ── Animation loop ─────────────────────────────────────────────────────────
   function playLoop(ts) {
     if (!EditorState.isPlaying()) return;
@@ -248,10 +323,12 @@ const Player = (() => {
     if (newTime !== undefined) {
       const dur = EditorState.getTotalDuration();
       if (newTime >= dur) {
+        pauseAllAudio();
         EditorState.setCurrentTime(0);
         EditorState.setPlaying(false);
         return;
       }
+      tickAudio(t, newTime);
       EditorState.setCurrentTime(newTime);
     }
 

@@ -296,8 +296,17 @@ async function exportVideo(project, outputPath, onProgress = null) {
     allAudioClips.forEach((clip, i) => {
       const audioPath = path.join(config.UPLOADS_DIR, '..', clip.src.replace(/^\//, ''));
       cmd.input(audioPath);
-      const vol = clip.volume !== undefined ? clip.volume : 0.8;
-      audioFilterParts.push(`[${bgAudioOffset + i}:a]volume=${vol}[abg${i}]`);
+      const vol      = clip.volume !== undefined ? clip.volume : 0.8;
+      const startT   = clip.startTime || 0;
+      const clipDur  = Math.max(0.1, (clip.endTime || totalDuration) - startT);
+      const delayMs  = Math.round(startT * 1000);
+      // atrim: trim the audio file to clip duration
+      // asetpts: reset PTS to 0 after trim
+      // adelay: shift the trimmed audio to its timeline start position
+      audioFilterParts.push(
+        `[${bgAudioOffset + i}:a]atrim=duration=${clipDur.toFixed(3)},` +
+        `asetpts=PTS-STARTPTS,volume=${vol},adelay=${delayMs}:all=1[abg${i}]`
+      );
       allAudioLabels.push(`[abg${i}]`);
     });
 

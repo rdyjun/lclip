@@ -60,7 +60,7 @@ const Layers = (() => {
     document.getElementById('modal-audio').style.display = 'flex';
   }
 
-  function addAudioLayer(audioPath, audioName, startTime, volume) {
+  function addAudioLayer(audioPath, audioName, startTime, volume, audioDuration) {
     const project = EditorState.getProject();
     if (!project) return;
 
@@ -74,7 +74,7 @@ const Layers = (() => {
       src: audioPath,
       name: audioName,
       startTime: startTime,
-      endTime: startTime + 60, // Will be updated when audio loads
+      endTime: startTime + (audioDuration || 60),
       volume: volume / 100
     };
 

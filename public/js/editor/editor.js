@@ -381,7 +381,15 @@
         body: formData
       }).then(r => r.json());
 
-      Layers.addAudioLayer(result.path, result.originalname, startTime, volume);
+      // Get actual audio duration from the browser so endTime is accurate
+      const audioDuration = await new Promise(resolve => {
+        const tmp = new Audio();
+        tmp.addEventListener('loadedmetadata', () => resolve(isFinite(tmp.duration) ? tmp.duration : 60));
+        tmp.addEventListener('error', () => resolve(60));
+        tmp.src = result.path;
+      });
+
+      Layers.addAudioLayer(result.path, result.originalname, startTime, volume, audioDuration);
       document.getElementById('modal-audio').style.display = 'none';
       Timeline.render();
     } catch (err) {
