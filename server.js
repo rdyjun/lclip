@@ -38,14 +38,21 @@ const videosRouter   = require('./src/routes/videos');
 const projectsRouter = require('./src/routes/projects');
 const exportRouter   = require('./src/routes/export');
 const roflRouter     = require('./src/routes/rofl');
+const fontsRouter    = require('./src/routes/fonts');
 
 app.use('/api/videos',   videosRouter);
 app.use('/api/projects', projectsRouter);
 app.use('/api/export',   exportRouter);
 app.use('/api/rofl',     roflRouter);
+app.use('/api/fonts',    fontsRouter);
 
-// Serve editor page
+// Serve editor page with COOP/COEP headers required by FFmpeg.wasm
+// (SharedArrayBuffer is only available in cross-origin isolated contexts).
+// credentialless COEP allows same-origin resources + cross-origin resources
+// that don't send credentials (e.g. Google Fonts CDN).
 app.get('/editor/:projectId', (req, res) => {
+  res.set('Cross-Origin-Opener-Policy',   'same-origin');
+  res.set('Cross-Origin-Embedder-Policy', 'credentialless');
   res.sendFile(path.join(__dirname, 'public', 'editor.html'));
 });
 

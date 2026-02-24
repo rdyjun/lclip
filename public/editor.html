@@ -122,7 +122,19 @@
       </div>
       <div class="modal-body">
         <div id="export-status-area">
-          <p>FFmpeg로 영상을 렌더링합니다. 완료까지 시간이 걸릴 수 있습니다.</p>
+          <!-- Export mode selector -->
+          <div style="display:flex;gap:8px;margin-bottom:14px;align-items:center">
+            <label style="font-size:13px;color:var(--text-secondary)">렌더링 위치:</label>
+            <label style="font-size:13px;cursor:pointer">
+              <input type="radio" name="export-mode" value="server" checked> 서버
+            </label>
+            <label style="font-size:13px;cursor:pointer">
+              <input type="radio" name="export-mode" value="client"> 내 컴퓨터 (FFmpeg.wasm)
+            </label>
+          </div>
+          <p id="export-mode-hint" style="font-size:12px;color:var(--text-secondary);margin-bottom:10px">
+            서버에서 FFmpeg로 렌더링합니다. NAS 서버 사양에 따라 시간이 걸릴 수 있습니다.
+          </p>
           <div class="export-progress-bar" id="export-progress-bar" style="display:none">
             <div class="export-progress-fill" id="export-progress-fill"></div>
           </div>
@@ -181,6 +193,7 @@
   <script src="/js/editor/timeline.js"></script>
   <script src="/js/editor/layers.js"></script>
   <script src="/js/editor/properties.js"></script>
+  <script src="/js/editor/clientExport.js"></script>
   <script src="/js/editor/editor.js"></script>
 </body>
 </html>

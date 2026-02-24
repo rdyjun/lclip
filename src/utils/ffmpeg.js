@@ -172,16 +172,21 @@ async function exportVideo(project, outputPath, onProgress = null) {
       const { scaleFilter, fw, fh, overlayX, overlayY } =
         computeClipFilter(clip, srcW, srcH, outputWidth, outputHeight);
 
-      const tempFile  = path.join(tempDir, `clip_${i}.mp4`);
-      const seekStart = Math.max(0, clip.srcStart - 5);
+      const tempFile = path.join(tempDir, `clip_${i}.mp4`);
+      const clipDuration = (clip.srcEnd - clip.srcStart).toFixed(3);
 
-      // Build per-clip filter: trim to source range, reset PTS, crop+scale.
-      const vFilter =
-        `[0:v]trim=start=${clip.srcStart}:end=${clip.srcEnd},` +
-        `setpts=PTS-STARTPTS,${scaleFilter}[ov]`;
-      const aFilter = hasAudio
-        ? `;[0:a]atrim=start=${clip.srcStart}:end=${clip.srcEnd},asetpts=PTS-STARTPTS[oa]`
-        : '';
+      // Dual-seek strategy for near-frame-accurate extraction on all codecs:
+      //   • Input -ss (fast): demuxer seeks to keyframe ≤ srcStart-seekBuffer.
+      //   • Output -ss seekBuffer: fine-tune — skip seekBuffer seconds of the
+      //     decoded/filtered output so we land at ≈ srcStart.
+      // This avoids the HEVC PTS-reset problem (trim=start=srcStart failed because
+      // after fast seek HEVC resets PTS to 0; seekBuffer math now compensates).
+      // setsar=1/1 corrects non-square SAR (e.g. 496:495) from some HEVC sources.
+      const seekBuffer = Math.min(clip.srcStart, 10);
+      const seekStart  = clip.srcStart - seekBuffer;
+
+      const vFilter = `[0:v]${scaleFilter},setsar=1/1[ov]`;
+      const aFilter = hasAudio ? `;[0:a]asetpts=PTS-STARTPTS[oa]` : '';
       const maps = hasAudio ? ['ov', 'oa'] : ['ov'];
 
       const n = resolvedVideoClips.length;
@@ -195,6 +200,8 @@ async function exportVideo(project, outputPath, onProgress = null) {
           .inputOptions(['-ss ' + seekStart.toFixed(3)])
           .complexFilter(vFilter + aFilter, maps)
           .outputOptions([
+            '-ss ' + seekBuffer.toFixed(3),  // fine-tune: skip buffer from decoded output
+            '-t ' + clipDuration,
             '-c:v libx264', '-preset ultrafast', '-crf 10',
             ...(hasAudio ? ['-c:a aac', '-b:a 192k'] : ['-an']),
           ])
@@ -433,4 +440,22 @@ function getFontPath(bold, fontFamily) {
   return candidates[0]; // let FFmpeg report the missing file clearly
 }
 
-module.exports = { getVideoInfo, exportVideo };
+// Creates a fluent-ffmpeg command that extracts [start, end] seconds from
+// srcPath and re-encodes to H.264/AAC fragmented MP4 (safe for streaming
+// and for FFmpeg.wasm, which may not have HEVC decoder).
+function createClipStream(srcPath, start, end, hasAudio = true) {
+  const duration = end - start;
+  const audioOpts = hasAudio ? ['-c:a aac', '-b:a 128k'] : ['-an'];
+  return ffmpeg(srcPath)
+    .inputOptions(['-ss ' + start.toFixed(3)])
+    .outputOptions([
+      '-t ' + duration.toFixed(3),
+      '-c:v libx264', '-preset ultrafast', '-crf 18',
+      ...audioOpts,
+      // Fragmented MP4: client can start reading before transfer completes
+      '-movflags frag_keyframe+empty_moov+default_base_moof',
+    ])
+    .format('mp4');
+}
+
+module.exports = { getVideoInfo, exportVideo, createClipStream, getFontPath };

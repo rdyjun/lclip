@@ -4,7 +4,8 @@ const multer = require('multer');
 const path = require('path');
 const fs = require('fs-extra');
 const { Videos } = require('../models/db');
-const { getVideoInfo } = require('../utils/ffmpeg');
+const ffmpegLib = require('fluent-ffmpeg');
+const { getVideoInfo, createClipStream } = require('../utils/ffmpeg');
 const config = require('../config');
 
 const storage = multer.diskStorage({
@@ -143,6 +144,55 @@ router.get('/stream/:id', (req, res) => {
     });
     fs.createReadStream(filePath).pipe(res);
   }
+});
+
+// GET /api/videos/clip/:id?start=X&end=Y
+// Extracts a time-bounded clip and streams it as H.264 MP4.
+// Used by client-side FFmpeg.wasm export so it receives a decodable H.264
+// segment instead of the potentially HEVC source.
+// Response header X-Has-Audio: 1/0 tells client whether audio is present.
+const _audioProbeCache = new Map();
+router.get('/clip/:id', async (req, res) => {
+  const video = Videos.findById(req.params.id);
+  if (!video) return res.status(404).json({ error: 'Video not found' });
+
+  const filePath = video.isLocal
+    ? video.localPath
+    : path.join(config.UPLOADS_DIR, '..', (video.path || '').replace(/^\//, ''));
+
+  if (!filePath || !fs.existsSync(filePath)) {
+    return res.status(404).json({ error: 'File not found on disk' });
+  }
+
+  const start = parseFloat(req.query.start) || 0;
+  const end   = parseFloat(req.query.end);
+  if (!end || end <= start) {
+    return res.status(400).json({ error: 'Invalid start/end query params' });
+  }
+
+  // Probe once per file path, cache result for the process lifetime.
+  let hasAudio = _audioProbeCache.get(filePath);
+  if (hasAudio === undefined) {
+    hasAudio = await new Promise(resolve => {
+      ffmpegLib.ffprobe(filePath, (err, meta) => {
+        resolve(!err && meta.streams.some(s => s.codec_type === 'audio'));
+      });
+    });
+    _audioProbeCache.set(filePath, hasAudio);
+  }
+
+  res.setHeader('Content-Type', 'video/mp4');
+  res.setHeader('X-Has-Audio', hasAudio ? '1' : '0');
+  // Allow the client JS to read this custom header (CORS expose)
+  res.setHeader('Access-Control-Expose-Headers', 'X-Has-Audio');
+
+  createClipStream(filePath, start, end, hasAudio)
+    .on('error', err => {
+      console.error(`Clip stream error [${video.id}]:`, err.message);
+      if (!res.headersSent) res.status(500).end();
+      else res.end();
+    })
+    .pipe(res, { end: true });
 });
 
 // DELETE /api/videos/:id

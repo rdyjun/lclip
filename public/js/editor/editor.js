@@ -227,12 +227,31 @@
   EditorState.on('layersChanged', scheduleSave);
 
   // ── Export ────────────────────────────────────────────────────────────────────
+
+  // Mode hint text shown below the radio buttons
+  const modeHints = {
+    server: '서버에서 FFmpeg로 렌더링합니다. NAS 서버 사양에 따라 시간이 걸릴 수 있습니다.',
+    client: '브라우저에서 FFmpeg.wasm으로 렌더링합니다. 첫 실행 시 WASM 다운로드가 필요합니다.',
+  };
+  document.querySelectorAll('input[name="export-mode"]').forEach(radio => {
+    radio.addEventListener('change', e => {
+      document.getElementById('export-mode-hint').textContent = modeHints[e.target.value] || '';
+    });
+  });
+
+  function getExportMode() {
+    const radio = document.querySelector('input[name="export-mode"]:checked');
+    return radio ? radio.value : 'server';
+  }
+
   document.getElementById('btn-export').addEventListener('click', () => {
     document.getElementById('modal-export').style.display = 'flex';
     document.getElementById('export-status-text').textContent = '';
     document.getElementById('export-download-area').style.display = 'none';
     document.getElementById('export-status-area').style.display = 'block';
     document.getElementById('export-progress-bar').style.display = 'none';
+    document.getElementById('export-progress-fill').style.width = '0%';
+    document.getElementById('export-progress-fill').style.background = '';
     document.getElementById('btn-start-export').disabled = false;
   });
 
@@ -246,7 +265,6 @@
     const project = EditorState.getProject();
     if (!project) return;
 
-    // Save first
     await saveProject();
 
     document.getElementById('btn-start-export').disabled = true;
@@ -254,13 +272,49 @@
     document.getElementById('export-progress-fill').style.width = '0%';
     document.getElementById('export-status-text').textContent = '렌더링 시작 중...';
 
-    try {
-      await fetch(`/api/export/${project.id}`, { method: 'POST' });
-      pollExportStatus(project.id);
-    } catch (err) {
-      document.getElementById('export-status-text').textContent = '오류: ' + err.message;
+    if (getExportMode() === 'client') {
+      startClientExport(project);
+    } else {
+      try {
+        await fetch(`/api/export/${project.id}`, { method: 'POST' });
+        pollExportStatus(project.id);
+      } catch (err) {
+        document.getElementById('export-status-text').textContent = '오류: ' + err.message;
+        document.getElementById('btn-start-export').disabled = false;
+      }
     }
   });
+
+  async function startClientExport(project) {
+    const fill     = document.getElementById('export-progress-fill');
+    const statusTx = document.getElementById('export-status-text');
+
+    try {
+      const blobUrl = await ClientExport.exportVideo(project, {
+        onProgress: (pct, msg) => {
+          fill.style.width = pct + '%';
+          statusTx.textContent = msg ? `${msg} (${pct}%)` : `렌더링 중... ${pct}%`;
+        },
+        onLog: msg => console.log('[FFmpeg.wasm]', msg),
+      });
+
+      fill.style.width = '100%';
+      setTimeout(() => {
+        document.getElementById('export-progress-bar').style.display = 'none';
+        document.getElementById('export-status-area').style.display = 'none';
+        document.getElementById('export-download-area').style.display = 'block';
+        const link = document.getElementById('export-download-link');
+        link.href = blobUrl;
+        link.download = `${project.name || 'export'}.mp4`;
+        link.textContent = '영상 다운로드';
+      }, 400);
+    } catch (err) {
+      console.error('Client export error:', err);
+      statusTx.textContent = '오류: ' + err.message;
+      fill.style.background = 'var(--danger, #e05)';
+      document.getElementById('btn-start-export').disabled = false;
+    }
+  }
 
   function pollExportStatus(projectId) {
     const fill     = document.getElementById('export-progress-fill');
@@ -284,6 +338,7 @@
           clearInterval(interval);
           statusTx.textContent = '오류: ' + status.error;
           fill.style.background = 'var(--danger, #e05)';
+          document.getElementById('btn-start-export').disabled = false;
         } else {
           const pct = status.progress || 0;
           fill.style.width = pct + '%';
