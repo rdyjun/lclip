@@ -56,7 +56,13 @@ body {
   color: var(--text-primary);
 }
 
-.logo-icon { font-size: 22px; }
+.logo-img {
+  height: 34px;
+  width: 34px;
+  object-fit: contain;
+  border-radius: 6px;
+  flex-shrink: 0;
+}
 .logo-text { background: linear-gradient(135deg, #a78bfa, #6c5ce7); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
 
 .header-nav { display: flex; gap: 4px; }
