@@ -8,7 +8,7 @@ const Player = (() => {
   let canvas, ctx, videoEl;
   let animFrameId = null;
   let lastTimestamp = null;
-  let _zoom = 0.5;
+  let _zoom = 0.25;
   let _lastBoundaryClipId = null; // prevents repeated src-change on the same boundary
 
   const OUTPUT_W = 1080, OUTPUT_H = 1920;
@@ -214,6 +214,19 @@ const Player = (() => {
         }
       });
     });
+
+    // Dim overlay — darkens workspace areas outside the output render region
+    // Drawn after clips so out-of-bounds clip content appears muted,
+    // but before handles so selection handles remain fully visible.
+    ctx.fillStyle = 'rgba(0,0,0,0.58)';
+    ctx.fillRect(0, 0, canvas.width, ofy);                                     // top
+    ctx.fillRect(0, ofy + ofh, canvas.width, canvas.height - ofy - ofh);       // bottom
+    ctx.fillRect(0, ofy, ofx, ofh);                                            // left
+    ctx.fillRect(ofx + ofw, ofy, canvas.width - ofx - ofw, ofh);              // right
+    // Re-draw output frame border on top of the overlay so it stays crisp
+    ctx.strokeStyle = 'rgba(255,255,255,0.45)';
+    ctx.lineWidth   = 1;
+    ctx.strokeRect(ofx + 0.5, ofy + 0.5, ofw - 1, ofh - 1);
 
     const selId = EditorState.getSelectedClip();
     if (selId) {
