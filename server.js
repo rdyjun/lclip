@@ -33,6 +33,13 @@ app.use(express.static(path.join(__dirname, 'public')));
 app.use('/uploads', express.static(config.UPLOADS_DIR));
 app.use('/exports', express.static(config.EXPORTS_DIR));
 
+// Serve FFmpeg.wasm packages from same origin so the Worker chunk
+// (814.ffmpeg.js) is also same-origin — required when COEP is enabled.
+app.use('/vendor/ffmpeg',
+  express.static(path.join(__dirname, 'node_modules/@ffmpeg/ffmpeg/dist/umd')));
+app.use('/vendor/ffmpeg-core',
+  express.static(path.join(__dirname, 'node_modules/@ffmpeg/core/dist/umd')));
+
 // Routes
 const videosRouter   = require('./src/routes/videos');
 const projectsRouter = require('./src/routes/projects');

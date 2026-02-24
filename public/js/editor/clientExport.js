@@ -22,10 +22,13 @@ const ClientExport = (() => {
 
   // ── FFmpeg.wasm lazy loader ────────────────────────────────────────────────
 
-  const FFMPEG_JS   = 'https://unpkg.com/@ffmpeg/ffmpeg@0.12.10/dist/umd/ffmpeg.js';
-  const FFMPEG_CORE = 'https://unpkg.com/@ffmpeg/core-mt@0.12.6/dist/umd/ffmpeg-core.js';
-  const FFMPEG_WASM = 'https://unpkg.com/@ffmpeg/core-mt@0.12.6/dist/umd/ffmpeg-core.wasm';
-  const FFMPEG_WORKER = 'https://unpkg.com/@ffmpeg/core-mt@0.12.6/dist/umd/ffmpeg-core.worker.js';
+  // Served from the same origin (node_modules served via express.static in server.js).
+  // This ensures the Worker chunk (814.ffmpeg.js) is also same-origin,
+  // which is required under COEP.
+  const FFMPEG_JS   = '/vendor/ffmpeg/ffmpeg.js';
+  const FFMPEG_CORE = '/vendor/ffmpeg-core/ffmpeg-core.js';
+  const FFMPEG_WASM = '/vendor/ffmpeg-core/ffmpeg-core.wasm';
+  // @ffmpeg/core (single-threaded) — no workerURL needed
 
   let _ffmpeg = null;
 
@@ -47,10 +50,10 @@ const ClientExport = (() => {
     // The UMD bundle exposes FFmpegWASM globally
     const { FFmpeg } = window.FFmpegWASM;
     _ffmpeg = new FFmpeg();
+    // Single-threaded core: only coreURL + wasmURL (no workerURL)
     await _ffmpeg.load({
-      coreURL:   FFMPEG_CORE,
-      wasmURL:   FFMPEG_WASM,
-      workerURL: FFMPEG_WORKER,
+      coreURL: FFMPEG_CORE,
+      wasmURL: FFMPEG_WASM,
     });
     return _ffmpeg;
   }
