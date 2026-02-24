@@ -78,12 +78,20 @@ async function exportVideo(project, outputPath) {
       return { ...clip, srcPath };
     });
 
-    const clipHasAudio = await Promise.all(
+    // Probe each clip for audio presence and source dimensions.
+    // Source dimensions are used to compute the minimal crop region for cover mode,
+    // avoiding processing millions of off-screen pixels.
+    const clipInfo = await Promise.all(
       resolvedVideoClips.map(clip =>
         new Promise(res => {
           ffmpeg.ffprobe(clip.srcPath, (err, meta) => {
-            if (err) return res(false);
-            res(meta.streams.some(s => s.codec_type === 'audio'));
+            if (err) return res({ hasAudio: false, srcW: 0, srcH: 0 });
+            const vStream = meta.streams.find(s => s.codec_type === 'video');
+            res({
+              hasAudio: meta.streams.some(s => s.codec_type === 'audio'),
+              srcW: vStream ? vStream.width  : 0,
+              srcH: vStream ? vStream.height : 0,
+            });
           });
         })
       )
@@ -102,6 +110,7 @@ async function exportVideo(project, outputPath) {
     let currentBase = '[bg]';
     resolvedVideoClips.forEach((clip, i) => {
       const { srcPath } = clip;
+      const { srcW, srcH } = clipInfo[i];
 
       // Fast seek: position FFmpeg near the trim start instead of decoding from 0.
       // -ss as input option does a keyframe seek (cheap); trim filter still uses
@@ -115,18 +124,64 @@ async function exportVideo(project, outputPath) {
       const scaleW = clip.width  || outputWidth;
       const scaleH = clip.height || outputHeight;
       const fit    = clip.fit    || 'cover';
+      const cx     = clip.x || 0;
+      const cy     = clip.y || 0;
 
-      // Fit-aware scale filter — preserves aspect ratio as in the editor preview
+      // Fit-aware scale filter — preserves aspect ratio as in the editor preview.
+      // For cover mode we compute the minimal source crop that covers the VISIBLE
+      // canvas region, avoiding decoding/scaling millions of off-screen pixels.
       let scaleFilter;
-      if (fit === 'cover') {
-        // Scale up to cover the target area, then crop center
+      let overlayX = cx;
+      let overlayY = cy;
+
+      if (fit === 'cover' && srcW > 0 && srcH > 0) {
+        // Visible region of the clip on the output canvas (display coordinates)
+        const fx = Math.max(0, -cx);
+        const fy = Math.max(0, -cy);
+        const fw = Math.max(1, Math.min(outputWidth,  cx + scaleW) - Math.max(0, cx));
+        const fh = Math.max(1, Math.min(outputHeight, cy + scaleH) - Math.max(0, cy));
+
+        // Cover maps source → display by scaling to the axis that fills both dims.
+        // force_original_aspect_ratio=increase picks the larger of the two scale
+        // factors, then the other axis is cropped from the center.
+        const srcAspect = srcW / srcH;
+        const tgtAspect = scaleW / scaleH;
+        let sf, offX, offY; // pixel offset of the scaleW×scaleH window inside the scaled source
+        if (srcAspect >= tgtAspect) {
+          // source wider → scale to height, crop left/right symmetrically
+          sf   = scaleH / srcH;
+          offX = (srcW * sf - scaleW) / 2;
+          offY = 0;
+        } else {
+          // source taller → scale to width, crop top/bottom symmetrically
+          sf   = scaleW / srcW;
+          offX = 0;
+          offY = (srcH * sf - scaleH) / 2;
+        }
+
+        // Reverse-map the visible display region back to source pixel coordinates
+        const srcCropX = Math.max(0, (fx + offX) / sf);
+        const srcCropY = Math.max(0, (fy + offY) / sf);
+        const srcCropW = Math.max(1, Math.min(srcW - srcCropX, fw / sf));
+        const srcCropH = Math.max(1, Math.min(srcH - srcCropY, fh / sf));
+
+        // Crop source to only the visible portion, then scale that small region
+        // to the display size. This avoids upscaling huge frames that mostly fall
+        // outside the canvas (e.g. 5575×3128 → 1080×1920 saves ~17× pixel work).
+        scaleFilter =
+          `crop=${Math.round(srcCropW)}:${Math.round(srcCropH)}:` +
+          `${Math.round(srcCropX)}:${Math.round(srcCropY)},` +
+          `scale=${fw}:${fh}:flags=bilinear`;
+        overlayX = Math.max(0, cx);
+        overlayY = Math.max(0, cy);
+      } else if (fit === 'cover') {
+        // Probe failed — fall back to original approach
         scaleFilter = `scale=${scaleW}:${scaleH}:force_original_aspect_ratio=increase,crop=${scaleW}:${scaleH}`;
       } else if (fit === 'contain') {
-        // Scale down to fit, pad with black
         scaleFilter = `scale=${scaleW}:${scaleH}:force_original_aspect_ratio=decrease,pad=${scaleW}:${scaleH}:(ow-iw)/2:(oh-ih)/2:black`;
       } else {
-        // fill — stretch
-        scaleFilter = `scale=${scaleW}:${scaleH}`;
+        // fill — stretch to display size
+        scaleFilter = `scale=${scaleW}:${scaleH}:flags=bilinear`;
       }
 
       // KEY FIX: offset PTS to the output timeline position.
@@ -137,7 +192,7 @@ async function exportVideo(project, outputPath) {
         `setpts=PTS-STARTPTS+(${clip.startTime}/TB),${scaleFilter}[v${i}]`
       );
       filterParts.push(
-        `${currentBase}[v${i}]overlay=x=${clip.x || 0}:y=${clip.y || 0}` +
+        `${currentBase}[v${i}]overlay=x=${overlayX}:y=${overlayY}` +
         `:enable='between(t,${clip.startTime},${clip.endTime})'[base${i}]`
       );
       currentBase = `[base${i}]`;
@@ -199,7 +254,7 @@ async function exportVideo(project, outputPath) {
     // Only add [i:a] for clips that actually have an audio stream.
     // Without this guard, FFmpeg crashes when a video-only file is used.
     resolvedVideoClips.forEach((clip, i) => {
-      if (!clipHasAudio[i]) return;
+      if (!clipInfo[i].hasAudio) return;
       const delayMs = Math.round(clip.startTime * 1000);
       audioFilterParts.push(
         `[${i}:a]atrim=start=${clip.srcStart}:end=${clip.srcEnd},` +
