@@ -195,6 +195,16 @@ router.get('/clip/:id', async (req, res) => {
     .pipe(res, { end: true });
 });
 
+// PATCH /api/videos/:id - Rename video
+router.patch('/:id', (req, res) => {
+  const video = Videos.findById(req.params.id);
+  if (!video) return res.status(404).json({ error: 'Video not found' });
+  const { name } = req.body;
+  if (!name || !name.trim()) return res.status(400).json({ error: 'Name is required' });
+  const updated = Videos.update(req.params.id, { name: name.trim() });
+  res.json(updated);
+});
+
 // DELETE /api/videos/:id
 router.delete('/:id', (req, res) => {
   const video = Videos.findById(req.params.id);

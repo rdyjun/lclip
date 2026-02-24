@@ -58,6 +58,16 @@ router.put('/:id', (req, res) => {
   res.json(updated);
 });
 
+// PATCH /api/projects/:id - Rename project
+router.patch('/:id', (req, res) => {
+  const project = Projects.findById(req.params.id);
+  if (!project) return res.status(404).json({ error: 'Project not found' });
+  const { name } = req.body;
+  if (!name || !name.trim()) return res.status(400).json({ error: 'Name is required' });
+  const updated = Projects.update(req.params.id, { name: name.trim() });
+  res.json(updated);
+});
+
 // DELETE /api/projects/:id
 router.delete('/:id', (req, res) => {
   Projects.delete(req.params.id);

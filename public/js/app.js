@@ -10,6 +10,11 @@ const API = {
     if (!r.ok) throw new Error(await r.text());
     return r.json();
   },
+  async patch(url, data) {
+    const r = await fetch(url, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) });
+    if (!r.ok) throw new Error(await r.text());
+    return r.json();
+  },
   async delete(url) {
     const r = await fetch(url, { method: 'DELETE' });
     if (!r.ok) throw new Error(await r.text());
@@ -32,6 +37,45 @@ function formatSize(bytes) {
 
 function formatDate(iso) {
   return new Date(iso).toLocaleDateString('ko-KR', { year: 'numeric', month: 'short', day: 'numeric' });
+}
+
+function calcProjectDuration(project) {
+  let max = 0;
+  (project.layers || []).forEach(layer => {
+    (layer.clips || []).forEach(clip => {
+      if ((clip.endTime || 0) > max) max = clip.endTime;
+    });
+  });
+  return max;
+}
+
+function startInlineEdit(nameEl, saveCallback) {
+  const currentName = nameEl.textContent;
+  const input = document.createElement('input');
+  input.className = 'name-edit-input';
+  input.value = currentName;
+  nameEl.replaceWith(input);
+  input.focus();
+  input.select();
+
+  let committed = false;
+  const commit = async () => {
+    if (committed) return;
+    committed = true;
+    const newName = input.value.trim() || currentName;
+    nameEl.textContent = newName;
+    input.replaceWith(nameEl);
+    if (newName !== currentName) {
+      try { await saveCallback(newName); }
+      catch (err) { nameEl.textContent = currentName; alert('저장 실패: ' + err.message); }
+    }
+  };
+
+  input.addEventListener('blur', commit);
+  input.addEventListener('keydown', e => {
+    if (e.key === 'Enter') { e.preventDefault(); commit(); }
+    if (e.key === 'Escape') { committed = true; nameEl.textContent = currentName; input.replaceWith(nameEl); }
+  });
 }
 
 // ── Navigation ───────────────────────────────────────────────────────────────
@@ -206,8 +250,17 @@ function createVideoCard(video) {
   }
 
   card.querySelector('.duration-badge').textContent = formatDuration(video.duration);
-  card.querySelector('.video-name').textContent = video.name;
+  const nameEl = card.querySelector('.video-name');
+  nameEl.textContent = video.name;
   card.querySelector('.video-meta').textContent = `${formatSize(video.size)} · ${formatDuration(video.duration)} · ${formatDate(video.createdAt)}`;
+
+  card.querySelector('.btn-rename').addEventListener('click', e => {
+    e.stopPropagation();
+    startInlineEdit(nameEl, async newName => {
+      await API.patch(`/api/videos/${video.id}`, { name: newName });
+      video.name = newName;
+    });
+  });
 
   card.querySelector('.btn-create-short').addEventListener('click', () => openCreateShortModal(video));
   card.querySelector('.btn-delete').addEventListener('click', async () => {
@@ -250,8 +303,20 @@ function createProjectCard(project) {
   const tpl = document.getElementById('tpl-project-card');
   const card = tpl.content.cloneNode(true).querySelector('.project-card');
 
-  card.querySelector('.project-name').textContent = project.name;
-  card.querySelector('.project-meta').textContent = formatDate(project.createdAt);
+  const projNameEl = card.querySelector('.project-name');
+  projNameEl.textContent = project.name;
+
+  const dur = calcProjectDuration(project);
+  const durStr = dur > 0 ? `${formatDuration(dur)} · ` : '';
+  card.querySelector('.project-meta').textContent = `${durStr}${formatDate(project.createdAt)}`;
+
+  card.querySelector('.btn-rename').addEventListener('click', e => {
+    e.stopPropagation();
+    startInlineEdit(projNameEl, async newName => {
+      await API.patch(`/api/projects/${project.id}`, { name: newName });
+      project.name = newName;
+    });
+  });
 
   card.querySelector('.btn-open-editor').addEventListener('click', () => {
     window.location.href = `/editor/${project.id}`;
