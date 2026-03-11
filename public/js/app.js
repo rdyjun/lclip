@@ -262,6 +262,7 @@ function createVideoCard(video) {
     });
   });
 
+  card.querySelector('.btn-ai-analyze').addEventListener('click', () => openAiModal(video));
   card.querySelector('.btn-create-short').addEventListener('click', () => openCreateShortModal(video));
   card.querySelector('.btn-delete').addEventListener('click', async () => {
     if (!confirm(`"${video.name}"을(를) 삭제할까요?`)) return;
@@ -277,23 +278,73 @@ function createVideoCard(video) {
 }
 
 // ── Load Projects ────────────────────────────────────────────────────────────
+let _activeProjectFolderId = null; // persists across reloads
+
 async function loadProjects() {
-  const grid = document.getElementById('project-grid');
+  const sidebar    = document.getElementById('projects-sidebar');
+  const grid       = document.getElementById('project-grid');
   const emptyState = document.getElementById('empty-projects');
 
   try {
-    const projects = await API.get('/api/projects');
-    grid.innerHTML = '';
+    const [projects, videos] = await Promise.all([
+      API.get('/api/projects'),
+      API.get('/api/videos'),
+    ]);
+    sidebar.innerHTML = '';
+    grid.innerHTML    = '';
 
     if (!projects.length) {
       grid.appendChild(emptyState);
       return;
     }
 
-    projects.forEach(project => {
-      const card = createProjectCard(project);
-      grid.appendChild(card);
+    const videoMap = Object.fromEntries(videos.map(v => [v.id, v]));
+
+    // Group projects by sourceVideoId
+    const folderMap = new Map();
+    const orphans   = [];
+    projects.forEach(p => {
+      const vid = p.sourceVideoId;
+      if (vid && videoMap[vid]) {
+        if (!folderMap.has(vid)) folderMap.set(vid, { videoId: vid, name: videoMap[vid].name, projects: [] });
+        folderMap.get(vid).projects.push(p);
+      } else {
+        orphans.push(p);
+      }
     });
+
+    const folders = [...folderMap.values()].sort((a, b) => a.name.localeCompare(b.name, 'ko'));
+    if (orphans.length) folders.push({ videoId: null, name: '기타', projects: orphans });
+
+    function selectFolder(folder, itemEl) {
+      _activeProjectFolderId = folder.videoId;
+      sidebar.querySelectorAll('.sidebar-folder-item').forEach(el => el.classList.remove('active'));
+      itemEl.classList.add('active');
+      grid.innerHTML = '';
+      folder.projects.forEach(p => grid.appendChild(createProjectCard(p)));
+    }
+
+    // Determine which folder to activate (restore previous selection if possible)
+    let defaultIdx = 0;
+    if (_activeProjectFolderId !== null) {
+      const idx = folders.findIndex(f => f.videoId === _activeProjectFolderId);
+      if (idx !== -1) defaultIdx = idx;
+    }
+
+    folders.forEach((folder, i) => {
+      const item = document.createElement('div');
+      item.className = 'sidebar-folder-item' + (i === defaultIdx ? ' active' : '');
+      item.innerHTML =
+        `<span class="sidebar-folder-icon">📁</span>` +
+        `<span class="sidebar-folder-name">${folder.name}</span>` +
+        `<span class="sidebar-folder-badge">${folder.projects.length}</span>`;
+      item.addEventListener('click', () => selectFolder(folder, item));
+      sidebar.appendChild(item);
+    });
+
+    // Show default folder
+    folders[defaultIdx].projects.forEach(p => grid.appendChild(createProjectCard(p)));
+    _activeProjectFolderId = folders[defaultIdx].videoId;
   } catch (err) {
     console.error(err);
   }
@@ -325,6 +376,7 @@ function createProjectCard(project) {
   card.querySelector('.btn-delete-project').addEventListener('click', async () => {
     if (!confirm(`"${project.name}"을(를) 삭제할까요?`)) return;
     try {
+      _activeProjectFolderId = project.sourceVideoId || null;
       await API.delete(`/api/projects/${project.id}`);
       loadProjects();
     } catch (err) {
@@ -453,12 +505,13 @@ function renderRoflModalBody(data) {
     </div>
     <p style="font-size:11px;color:var(--text-muted);margin-bottom:12px">예: 로딩화면 포함 녹화 시 약 90초 입력</p>
     ${data.eventsFound
-      ? `<p style="font-size:12px;color:#2ecc71;margin-bottom:8px">✅ ${data.events.length}개 이벤트 자동 감지됨</p>`
+      ? `<p style="font-size:12px;color:#2ecc71;margin-bottom:4px">✅ ${data.events.length}개 전투 구간 자동 감지됨</p>
+         <p style="font-size:11px;color:var(--text-muted);margin-bottom:8px">※ 패킷 암호화로 킬 정확도 보장 불가 — 활동량(패킷 크기) 기반 추정값입니다. 필요시 직접 수정하세요.</p>`
       : `<p style="font-size:12px;color:var(--text-muted);margin-bottom:4px">자동 이벤트 감지 불가 — 직접 입력하세요.</p>`}
     <label class="form-label">이벤트 목록 (편집 가능)</label>
-    <p style="font-size:11px;color:var(--text-muted);margin-bottom:6px">형식: 분:초 또는 초 + 유형(kill/death/assist), 줄 또는 쉼표 구분</p>
+    <p style="font-size:11px;color:var(--text-muted);margin-bottom:6px">형식: 분:초 또는 초 + 유형(kill/death/assist/activity), 줄 또는 쉼표 구분</p>
     <textarea class="form-input" id="rofl-events-text" rows="6"
-      placeholder="5:30 kill&#10;8:15 death&#10;9:20 assist"></textarea>
+      placeholder="5:30 kill&#10;8:15 death&#10;9:20 activity"></textarea>
     <div class="prop-row" style="margin-top:10px">
       <label class="prop-label" style="min-width:140px">이벤트 전 여유 (초)</label>
       <input type="number" class="prop-input" id="rofl-before" value="10" min="0" max="60">
@@ -495,8 +548,8 @@ function parseManualEvents(text) {
   const events = [];
   text.split(/[\n,]+/).forEach(line => {
     const t = line.trim(); if (!t) return;
-    const m1 = t.match(/^(\d+):(\d+)\s+(kill|death|assist)$/i);
-    const m2 = t.match(/^(\d+(?:\.\d+)?)\s+(kill|death|assist)$/i);
+    const m1 = t.match(/^(\d+):(\d+)\s+(kill|death|assist|activity)$/i);
+    const m2 = t.match(/^(\d+(?:\.\d+)?)\s+(kill|death|assist|activity)$/i);
     if (m1) events.push({ type: m1[3].toLowerCase(), timeS: parseInt(m1[1]) * 60 + parseInt(m1[2]) });
     else if (m2) events.push({ type: m2[2].toLowerCase(), timeS: parseFloat(m2[1]) });
   });
@@ -558,6 +611,228 @@ document.getElementById('btn-rofl-confirm').addEventListener('click', async () =
   } catch (err) {
     alert('프로젝트 생성 실패: ' + err.message);
     btn.disabled = false; btn.textContent = '클립 생성 후 편집기 열기';
+  }
+});
+
+// ── AI Highlight Analysis ─────────────────────────────────────────────────────
+let _aiVideo = null;
+let _aiClips = [];
+let _aiMusic = [];
+
+function openAiModal(video) {
+  _aiVideo = video;
+  _aiClips = [];
+  document.getElementById('ai-modal-footer').style.display = 'none';
+  document.getElementById('ai-modal-body').innerHTML =
+    `<p style="color:var(--text-secondary);font-size:13px;margin-bottom:16px">
+       <strong>${video.name}</strong> 영상을 Gemini AI가 직접 시청하며 분석합니다.<br>
+       킬, 멀티킬, 아웃플레이 등 유튜브 반응이 좋을 하이라이트를 자동으로 찾아 쇼츠 클립을 생성합니다.
+     </p>
+     <div class="progress-bar" id="ai-progress-bar" style="display:none">
+       <div class="progress-fill" id="ai-progress-fill" style="width:0%"></div>
+     </div>
+     <p class="progress-text" id="ai-progress-text" style="display:none"></p>
+     <button class="btn btn-primary" id="btn-ai-start" style="margin-top:8px">분석 시작</button>`;
+
+  document.getElementById('btn-ai-start').addEventListener('click', startAiAnalysis);
+  document.getElementById('modal-ai').style.display = 'flex';
+}
+
+function startAiAnalysis() {
+  document.getElementById('btn-ai-start').remove();
+  document.getElementById('ai-progress-bar').style.display = 'block';
+  document.getElementById('ai-progress-text').style.display = 'block';
+  setAiProgress(5, '분석 준비 중...');
+
+  const es = new EventSource(`/api/ai/analyze?videoId=${_aiVideo.id}`);
+
+  es.addEventListener('progress', e => {
+    const { message, percent } = JSON.parse(e.data);
+    setAiProgress(percent, message);
+  });
+
+  es.addEventListener('result', e => {
+    es.close();
+    const { shorts, music } = JSON.parse(e.data);
+    _aiClips = shorts;
+    _aiMusic = music || [];
+    renderAiResults(shorts, music || []);
+  });
+
+  es.addEventListener('error', e => {
+    es.close();
+    let msg = 'AI 분석 중 오류가 발생했습니다. 서버 로그를 확인하세요.';
+    if (e.data) {
+      try { msg = JSON.parse(e.data).message; } catch (_) {}
+    }
+    document.getElementById('ai-modal-body').innerHTML =
+      `<p style="color:#e74c3c;font-size:13px">❌ ${msg}</p>`;
+  });
+}
+
+function setAiProgress(percent, message) {
+  document.getElementById('ai-progress-fill').style.width = percent + '%';
+  document.getElementById('ai-progress-text').textContent = message;
+}
+
+function renderAiResults(shorts, music) {
+  if (!shorts.length) {
+    document.getElementById('ai-modal-body').innerHTML =
+      `<p style="color:var(--text-secondary);font-size:13px">하이라이트 장면을 찾지 못했습니다.</p>`;
+    return;
+  }
+
+  // ── Shorts list ──
+  let html = `<p style="font-size:13px;color:var(--text-secondary);margin-bottom:12px">
+    ✅ <strong>${shorts.length}개</strong> 쇼츠를 생성합니다.
+  </p><div style="display:flex;flex-direction:column;gap:8px">`;
+
+  shorts.forEach((s, i) => {
+    const dur = s.totalDuration.toFixed(0);
+    const overLimit = s.totalDuration > 60;
+    const typeBadge = s.type === 'montage'
+      ? `<span style="font-size:10px;background:#8e44ad;color:#fff;padding:1px 6px;border-radius:3px;margin-left:6px">모음</span>`
+      : `<span style="font-size:10px;background:#2980b9;color:#fff;padding:1px 6px;border-radius:3px;margin-left:6px">단독</span>`;
+
+    let timeInfo = s.type === 'standalone'
+      ? `${fmtTime(s.segments[0].srcStart)} ~ ${fmtTime(s.segments[0].srcEnd)}`
+      : `${s.segments.length}개 구간 이어붙이기`;
+
+    const subPreview = s.subtitles?.length
+      ? `<div style="font-size:10px;color:var(--accent);margin-top:3px">자막 ${s.subtitles.length}개: ${s.subtitles.map(t => `"${t.text}"`).join(', ')}</div>`
+      : '';
+
+    html += `
+      <div style="background:var(--bg-hover);border-radius:6px;padding:10px 14px">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
+          <span style="color:var(--accent);font-weight:600;min-width:20px">#${i + 1}</span>
+          <span style="font-size:13px;font-weight:600;flex:1">${s.title}</span>
+          ${typeBadge}
+          <span style="font-size:11px;color:${overLimit ? '#e74c3c' : 'var(--text-muted)'};font-weight:600">${dur}s${overLimit ? ' ⚠️' : ''}</span>
+          ${s.virality ? `<span style="font-size:11px;color:#f1c40f;font-weight:600">⚡${s.virality}</span>` : ''}
+        </div>
+        <div style="font-size:11px;color:var(--text-muted)">${timeInfo}${s.description ? ' · ' + s.description : ''}</div>
+        ${subPreview}
+      </div>`;
+  });
+  html += '</div>';
+
+  // ── Music recommendations ──
+  if (music && music.length) {
+    html += `
+      <div style="margin-top:20px">
+        <p style="font-size:13px;font-weight:600;margin-bottom:10px;color:var(--text-primary)">🎵 추천 배경음악</p>
+        <div style="display:flex;flex-direction:column;gap:8px">`;
+
+    music.forEach(m => {
+      const ytUrl = `https://www.youtube.com/results?search_query=${encodeURIComponent(m.searchQuery || m.title)}`;
+      html += `
+        <div style="background:var(--bg-hover);border-radius:6px;padding:10px 14px;display:flex;align-items:center;gap:10px">
+          <div style="flex:1;min-width:0">
+            <div style="font-size:13px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${m.title}</div>
+            <div style="font-size:11px;color:var(--text-muted);margin-top:2px">${[m.genre, m.mood, m.source].filter(Boolean).join(' · ')}</div>
+          </div>
+          <a href="${ytUrl}" target="_blank" rel="noopener"
+             style="font-size:11px;padding:4px 10px;background:#c0392b;color:#fff;border-radius:4px;text-decoration:none;white-space:nowrap;flex-shrink:0">
+            유튜브 검색
+          </a>
+        </div>`;
+    });
+
+    html += `</div></div>`;
+  }
+
+  document.getElementById('ai-modal-body').innerHTML = html;
+  document.getElementById('ai-modal-footer').style.display = 'flex';
+  const btn = document.getElementById('btn-ai-confirm');
+  btn.disabled = false;
+  btn.textContent = `쇼츠 ${shorts.length}개 생성`;
+}
+
+document.getElementById('ai-modal-close').addEventListener('click', () => {
+  document.getElementById('modal-ai').style.display = 'none';
+});
+document.getElementById('btn-ai-cancel').addEventListener('click', () => {
+  document.getElementById('modal-ai').style.display = 'none';
+});
+document.getElementById('modal-ai').addEventListener('click', e => {
+  if (e.target === e.currentTarget) document.getElementById('modal-ai').style.display = 'none';
+});
+
+document.getElementById('btn-ai-confirm').addEventListener('click', async () => {
+  if (!_aiVideo || !_aiClips.length) return;
+  const btn = document.getElementById('btn-ai-confirm');
+  btn.disabled = true;
+  btn.textContent = '생성 중...';
+  try {
+    // Create one project per short in parallel
+    const projects = await Promise.all(_aiClips.map(short =>
+      API.post('/api/projects', {
+        sourceVideoId: _aiVideo.id,
+        name: short.title,
+        musicRecommendations: _aiMusic,
+        roflClips: short.segments.map((s, i) => ({
+          srcStart:   s.srcStart,
+          srcEnd:     s.srcEnd,
+          eventTypes: ['highlight'],
+          // Distribute subtitles to the first segment; montage offsets are cumulative
+          subtitles: i === 0 ? short.subtitles || [] : [],
+        })),
+      })
+    ));
+
+    document.getElementById('modal-ai').style.display = 'none';
+
+    if (projects.length === 1) {
+      window.location.href = `/editor/${projects[0].id}`;
+    } else {
+      // Refresh project list so all new projects appear
+      await loadProjects();
+      // Scroll to project section
+      document.querySelector('[data-page="projects"]')?.click();
+    }
+  } catch (err) {
+    alert('프로젝트 생성 실패: ' + err.message);
+    btn.disabled = false;
+    btn.textContent = `쇼츠 ${_aiClips.length}개 생성`;
+  }
+});
+
+// ── AI Settings Modal ─────────────────────────────────────────────────────────
+async function openAiSettings() {
+  try {
+    const cfg = await API.get('/api/ai/config');
+    document.getElementById('ai-settings-refs').value = (cfg.referenceVideos || []).join('\n');
+    document.getElementById('ai-settings-concept').value = cfg.concept || '';
+  } catch (_) {}
+  document.getElementById('modal-ai-settings').style.display = 'flex';
+}
+
+document.getElementById('btn-ai-settings').addEventListener('click', openAiSettings);
+document.getElementById('ai-settings-close').addEventListener('click', () => {
+  document.getElementById('modal-ai-settings').style.display = 'none';
+});
+document.getElementById('ai-settings-cancel').addEventListener('click', () => {
+  document.getElementById('modal-ai-settings').style.display = 'none';
+});
+document.getElementById('modal-ai-settings').addEventListener('click', e => {
+  if (e.target === e.currentTarget) document.getElementById('modal-ai-settings').style.display = 'none';
+});
+document.getElementById('ai-settings-save').addEventListener('click', async () => {
+  const refsRaw = document.getElementById('ai-settings-refs').value;
+  const referenceVideos = refsRaw.split('\n').map(s => s.trim()).filter(Boolean);
+  const concept = document.getElementById('ai-settings-concept').value.trim();
+  const btn = document.getElementById('ai-settings-save');
+  btn.disabled = true;
+  btn.textContent = '저장 중...';
+  try {
+    await API.post('/api/ai/config', { referenceVideos, concept });
+    document.getElementById('modal-ai-settings').style.display = 'none';
+  } catch (err) {
+    alert('저장 실패: ' + err.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '저장';
   }
 });
 

@@ -13,7 +13,7 @@
   <!-- Top Toolbar -->
   <div class="editor-toolbar">
     <div class="toolbar-left">
-      <a href="/" class="btn btn-secondary btn-sm">← 홈</a>
+      <a href="/" class="btn btn-secondary btn-sm" onclick="event.preventDefault(); history.back()">← 홈</a>
       <span class="project-title" id="project-title">프로젝트 로딩 중...</span>
     </div>
     <div class="toolbar-center">
@@ -27,6 +27,7 @@
       <div class="timecode" id="timecode">00:00.000</div>
     </div>
     <div class="toolbar-right">
+      <button class="ctrl-btn" id="btn-toggle-music" title="음악 패널 열기/닫기">🎵</button>
       <button class="ctrl-btn" id="btn-cut" title="현재 위치에서 자르기 (C)">✂</button>
       <select class="form-input tool-select" id="active-tool" style="width:auto;padding:6px 10px">
         <option value="select">선택 도구</option>
@@ -41,6 +42,11 @@
 
   <!-- Main Editor Layout -->
   <div class="editor-layout">
+
+    <!-- Music Drawer (collapsible left) -->
+    <div class="music-drawer" id="music-drawer">
+      <div class="music-drawer-inner" id="music-drawer-inner"></div>
+    </div>
 
     <!-- Left: Preview + Properties -->
     <div class="editor-left" id="editor-left">
@@ -197,5 +203,6 @@
   <script src="/js/editor/properties.js"></script>
   <script src="/js/editor/clientExport.js"></script>
   <script src="/js/editor/editor.js"></script>
+  <script src="/js/editor/music.js"></script>
 </body>
 </html>

@@ -3,6 +3,7 @@ const path = require('path');
 const fs = require('fs-extra');
 const { Videos } = require('../models/db');
 const config = require('../config');
+const { renderSubtitlePng } = require('./subtitleRenderer');
 
 // FFMPEG_PATH env var takes priority (set in Dockerfile for system FFmpeg).
 // Falls back to ffmpeg-static for local dev environments.
@@ -41,6 +42,17 @@ function getVideoInfo(filePath) {
 
 // Round down to nearest even number (≥2). libx264 + yuv420p requires even W/H.
 const evenFloor = n => Math.max(2, n % 2 === 0 ? n : n - 1);
+
+// Build an atempo filter chain for the given speed (atempo range: 0.5–2.0).
+// e.g. 0.25 → "atempo=0.5,atempo=0.5", 4 → "atempo=2.0,atempo=2.0"
+function buildAtempoFilter(speed) {
+  const filters = [];
+  let s = speed;
+  while (s < 0.5) { filters.push('atempo=0.5'); s /= 0.5; }
+  while (s > 2.0) { filters.push('atempo=2.0'); s /= 2.0; }
+  if (Math.abs(s - 1.0) > 0.001) filters.push(`atempo=${s.toFixed(6)}`);
+  return filters.join(',');
+}
 
 // Compute the spatial filter (crop + scale) for a video clip and the overlay
 // position on the output canvas.  Works for cover / contain / fill fit modes.
@@ -102,7 +114,10 @@ function computeClipFilter(clip, srcW, srcH, outputWidth, outputHeight) {
 // onProgress(percent 0-100, message) — called during export to report progress.
 // Phase 1 (clip extraction): 0 → 60 %.
 // Phase 2 (compositing):     60 → 100 %.
-async function exportVideo(project, outputPath, onProgress = null) {
+// subtitlePngMap: optional {[clipId]: Buffer} of browser-rendered PNGs.
+// When provided, these are used instead of node-canvas rendering to guarantee
+// the exported font matches the editor preview exactly.
+async function exportVideo(project, outputPath, onProgress = null, subtitlePngMap = {}) {
   const { layers, outputWidth = 1080, outputHeight = 1920, fps = 30 } = project;
 
   // Collect clips by type across ALL layers, respecting visibility.
@@ -173,7 +188,9 @@ async function exportVideo(project, outputPath, onProgress = null) {
         computeClipFilter(clip, srcW, srcH, outputWidth, outputHeight);
 
       const tempFile = path.join(tempDir, `clip_${i}.mp4`);
-      const clipDuration = (clip.srcEnd - clip.srcStart).toFixed(3);
+      const speed = clip.speed || 1;
+      const srcDuration = clip.srcEnd - clip.srcStart;
+      const clipDuration = (srcDuration / speed).toFixed(3);
 
       // Dual-seek strategy for near-frame-accurate extraction on all codecs:
       //   • Input -ss (fast): demuxer seeks to keyframe ≤ srcStart-seekBuffer.
@@ -182,16 +199,23 @@ async function exportVideo(project, outputPath, onProgress = null) {
       // This avoids the HEVC PTS-reset problem (trim=start=srcStart failed because
       // after fast seek HEVC resets PTS to 0; seekBuffer math now compensates).
       // setsar=1/1 corrects non-square SAR (e.g. 496:495) from some HEVC sources.
-      const seekBuffer = Math.min(clip.srcStart, 10);
-      const seekStart  = clip.srcStart - seekBuffer;
+      const seekBuffer    = Math.min(clip.srcStart, 10);
+      const seekStart     = clip.srcStart - seekBuffer;
+      // Output -ss is in output time (after speed filter); divide by speed accordingly.
+      const outSeekBuffer = (seekBuffer / speed).toFixed(3);
 
-      const vFilter = `[0:v]${scaleFilter},setsar=1/1[ov]`;
-      const aFilter = hasAudio ? `;[0:a]asetpts=PTS-STARTPTS[oa]` : '';
+      const speedPts = speed !== 1 ? `setpts=PTS/${speed},` : '';
+      const vFilter  = `[0:v]${speedPts}${scaleFilter},setsar=1/1[ov]`;
+      let aFilter    = '';
+      if (hasAudio) {
+        const atempoChain = speed !== 1 ? `,${buildAtempoFilter(speed)}` : '';
+        aFilter = `;[0:a]asetpts=PTS-STARTPTS${atempoChain}[oa]`;
+      }
       const maps = hasAudio ? ['ov', 'oa'] : ['ov'];
 
       const n = resolvedVideoClips.length;
       const msg = `클립 추출 중 (${i + 1}/${n})`;
-      console.log(`Extracting clip ${i + 1}/${n} → ${path.basename(tempFile)}`);
+      console.log(`Extracting clip ${i + 1}/${n} → ${path.basename(tempFile)} (speed=${speed}x)`);
       onProgress?.(Math.round(i / n * 60), msg);
 
       await new Promise((resolve, reject) => {
@@ -200,7 +224,7 @@ async function exportVideo(project, outputPath, onProgress = null) {
           .inputOptions(['-ss ' + seekStart.toFixed(3)])
           .complexFilter(vFilter + aFilter, maps)
           .outputOptions([
-            '-ss ' + seekBuffer.toFixed(3),  // fine-tune: skip buffer from decoded output
+            '-ss ' + outSeekBuffer,          // fine-tune: skip buffer from decoded output
             '-t ' + clipDuration,
             '-c:v libx264', '-preset ultrafast', '-crf 10',
             ...(hasAudio ? ['-c:a aac', '-b:a 192k'] : ['-an']),
@@ -217,6 +241,20 @@ async function exportVideo(project, outputPath, onProgress = null) {
 
       onProgress?.(Math.round((i + 1) / n * 60), msg);
       tempClips.push({ file: tempFile, clip, fw, fh, overlayX, overlayY, hasAudio });
+    }
+
+    // Pre-render subtitle clips to transparent PNGs.
+    // Priority: browser-rendered PNGs from subtitlePngMap (pixel-perfect match with editor preview).
+    // Fallback: node-canvas rendering (used when browser PNGs are not available).
+    const validSubtitlePngs = [];
+    for (let i = 0; i < allSubtitleClips.length; i++) {
+      const clip = allSubtitleClips[i];
+      if (!clip.text) continue;
+      const buf = subtitlePngMap[clip.id] || renderSubtitlePng(clip, outputWidth, outputHeight);
+      if (!buf) continue;
+      const pngFile = path.join(tempDir, `subtitle_${i}.png`);
+      await fs.writeFile(pngFile, buf);
+      validSubtitlePngs.push({ file: pngFile, clip });
     }
 
     // ── Phase 2: Composite from temp files (fast local disk I/O) ─────────────
@@ -245,54 +283,33 @@ async function exportVideo(project, outputPath, onProgress = null) {
 
       if (hasAudio) {
         const delayMs = Math.round(clip.startTime * 1000);
+        const vol = clip.volume !== undefined ? clip.volume : 1;
         // Temp file audio is already trimmed to clip duration; just delay to position.
-        audioFilterParts.push(`[${i}:a]adelay=${delayMs}:all=1[av${i}]`);
+        audioFilterParts.push(`[${i}:a]volume=${vol},adelay=${delayMs}:all=1[av${i}]`);
         allAudioLabels.push(`[av${i}]`);
       }
     });
 
-    // Subtitle drawtext filters
-    let subtitleBase = currentBase;
-    let subtitleIdx  = 0;
-    allSubtitleClips.forEach(clip => {
-      if (!clip.text) return;
-      // % must be doubled to prevent FFmpeg drawtext strftime misinterpretation
-      const escaped  = clip.text.replace(/%/g, '%%').replace(/'/g, "\\'").replace(/:/g, '\\:').replace(/\n/g, '\\n');
-      const colorHex = rgbToFFmpegColor(clip.color || '#ffffff');
-      const fontSize = clip.fontSize || 48;
-      const fontFile = getFontPath(clip.bold, clip.fontFamily);
-
-      const align = clip.align || 'center';
-      let xExpr;
-      if (align === 'left') {
-        xExpr = String(clip.x || 0);
-      } else if (align === 'right') {
-        xExpr = `${clip.x ?? outputWidth}-(text_w)`;
-      } else {
-        xExpr = `${clip.x || Math.round(outputWidth / 2)}-(text_w/2)`;
-      }
-
-      let boxStr = '';
-      const bgColor = clip.backgroundColor;
-      if (bgColor && bgColor !== 'none') {
-        const ffmpegBg = rgbaToFFmpegColor(bgColor);
-        if (ffmpegBg) {
-          const pad = clip.backgroundPadding || 16;
-          boxStr = `:box=1:boxcolor=${ffmpegBg}:boxborderw=${pad}`;
-        }
-      }
-
-      filterParts.push(
-        `${subtitleBase}drawtext=fontfile='${fontFile}':text='${escaped}'` +
-        `:fontsize=${fontSize}:fontcolor=${colorHex}:x=${xExpr}:y=${clip.y ?? 100}` +
-        `${boxStr}:enable='between(t,${clip.startTime},${clip.endTime})'[subs${subtitleIdx}]`
-      );
-      subtitleBase = `[subs${subtitleIdx}]`;
-      subtitleIdx++;
+    // Subtitle PNG overlay filters (node-canvas pre-rendered, pixel-perfect match with editor preview)
+    // Use -r {fps} instead of -framerate 1 to match output framerate — ensures the overlay
+    // filter always has a frame available and prevents intermittent subtitle dropout.
+    validSubtitlePngs.forEach(({ file }) => {
+      cmd.input(file);
+      cmd.inputOptions([`-r ${fps}`, '-loop 1']);
     });
 
-    // Background audio inputs (follow temp clip inputs)
-    const bgAudioOffset = tempClips.length;
+    let subtitleBase = currentBase;
+    validSubtitlePngs.forEach(({ clip }, i) => {
+      const inputIdx = tempClips.length + i;
+      filterParts.push(
+        `${subtitleBase}[${inputIdx}:v]overlay=0:0:` +
+        `enable='between(t,${clip.startTime},${clip.endTime})'[subover${i}]`
+      );
+      subtitleBase = `[subover${i}]`;
+    });
+
+    // Background audio inputs (follow video + subtitle PNG inputs)
+    const bgAudioOffset = tempClips.length + validSubtitlePngs.length;
     allAudioClips.forEach((clip, i) => {
       const audioPath = path.join(config.UPLOADS_DIR, '..', clip.src.replace(/^\//, ''));
       cmd.input(audioPath);
@@ -323,7 +340,7 @@ async function exportVideo(project, outputPath, onProgress = null) {
 
     // Build final filter graph
     const filterGraph     = [...filterParts, ...audioFilterParts].join(';');
-    const finalVideoLabel = (subtitleIdx > 0 ? subtitleBase : currentBase).replace(/[\[\]]/g, '');
+    const finalVideoLabel = (validSubtitlePngs.length > 0 ? subtitleBase : currentBase).replace(/[\[\]]/g, '');
     const mapLabels       = audioMapLabel ? [finalVideoLabel, audioMapLabel] : [finalVideoLabel];
 
     const outputOpts = [
@@ -398,9 +415,11 @@ function rgbaToFFmpegColor(cssColor) {
   return null;
 }
 
-// Maps CSS fontFamily values (used in the editor UI) to TTF file names
-// installed in /usr/share/fonts/korean/ inside the Docker image.
-const FONT_DIR = '/usr/share/fonts/korean';
+// Project-bundled fonts directory (cross-platform, takes priority over system fonts)
+const PROJECT_FONT_DIR = path.join(__dirname, '../../fonts');
+// Docker image fonts directory
+const DOCKER_FONT_DIR  = '/usr/share/fonts/korean';
+
 const FONT_MAP = {
   'Noto Sans KR, sans-serif':     { r: 'NotoSansKR-Regular.ttf',     b: 'NotoSansKR-Bold.ttf' },
   'Nanum Gothic, sans-serif':     { r: 'NanumGothic-Regular.ttf',    b: 'NanumGothic-Bold.ttf' },
@@ -413,40 +432,56 @@ const FONT_MAP = {
   'Jua, sans-serif':              { r: 'Jua-Regular.ttf',            b: null },
 };
 
+// NotoSansKR static Regular font — consistent metrics across FreeType and DirectWrite
+const NOTO_VARIABLE = path.join(PROJECT_FONT_DIR, 'NotoSansKR-Regular.ttf');
+
 function getFontPath(bold, fontFamily) {
-  // 1. Try the clip's selected font first
+  // 1. Project-bundled fonts (highest priority — same font as browser, cross-platform)
   if (fontFamily && FONT_MAP[fontFamily]) {
-    const entry   = FONT_MAP[fontFamily];
-    const names   = bold && entry.b ? [entry.b, entry.r] : [entry.r];
+    const entry = FONT_MAP[fontFamily];
+    const names = bold && entry.b ? [entry.b, entry.r] : [entry.r];
     for (const name of names) {
       if (!name) continue;
-      const p = path.join(FONT_DIR, name);
+      const p = path.join(PROJECT_FONT_DIR, name);
+      if (fs.existsSync(p)) return p;
+    }
+  }
+  // Noto Sans KR variable font covers all weights
+  if ((!fontFamily || fontFamily.includes('Noto')) && fs.existsSync(NOTO_VARIABLE)) {
+    return NOTO_VARIABLE;
+  }
+
+  // 2. Docker image fonts
+  if (fontFamily && FONT_MAP[fontFamily]) {
+    const entry = FONT_MAP[fontFamily];
+    const names = bold && entry.b ? [entry.b, entry.r] : [entry.r];
+    for (const name of names) {
+      if (!name) continue;
+      const p = path.join(DOCKER_FONT_DIR, name);
       if (fs.existsSync(p)) return p;
     }
   }
 
-  // 2. Generic fallback candidates (Docker → Windows → Linux → macOS)
+  // 3. System font fallbacks (Windows → Linux → macOS)
   const boldFallbacks = [
-    path.join(FONT_DIR, 'NanumGothic-Bold.ttf'),
+    path.join(DOCKER_FONT_DIR, 'NanumGothic-Bold.ttf'),
     'C\\:/Windows/Fonts/malgunbd.ttf',
     'C\\:/Windows/Fonts/arialbd.ttf',
     '/usr/share/fonts/truetype/nanum/NanumGothicBold.ttf',
-    '/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf',
   ];
   const regularFallbacks = [
-    path.join(FONT_DIR, 'NanumGothic-Regular.ttf'),
+    path.join(DOCKER_FONT_DIR, 'NanumGothic-Regular.ttf'),
     'C\\:/Windows/Fonts/malgun.ttf',
     'C\\:/Windows/Fonts/arial.ttf',
     '/usr/share/fonts/truetype/nanum/NanumGothic.ttf',
     '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
-    '/System/Library/Fonts/Helvetica.ttc',
   ];
   const candidates = bold ? [...boldFallbacks, ...regularFallbacks] : regularFallbacks;
   for (const f of candidates) {
     const real = f.startsWith('C\\:/') ? f.replace('C\\:/', 'C:/') : f;
     if (fs.existsSync(real)) return f;
   }
-  return candidates[0]; // let FFmpeg report the missing file clearly
+  return candidates[0];
 }
 
 // Creates a fluent-ffmpeg command that extracts [start, end] seconds from

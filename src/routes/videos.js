@@ -49,7 +49,7 @@ router.post('/upload', upload.single('video'), async (req, res) => {
     const info = await getVideoInfo(filePath);
 
     const video = Videos.create({
-      name: req.file.originalname,
+      name: Buffer.from(req.file.originalname, 'latin1').toString('utf8'),
       filename: req.file.filename,
       path: `/uploads/videos/${req.file.filename}`,
       size: req.file.size,

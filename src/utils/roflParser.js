@@ -2,7 +2,7 @@
 /**
  * ROFL file parser for League of Legends replay files.
  *
- * Format (RIOT:ROFL:1.1):
+ * === Legacy format (RIOT:ROFL:1.1) ===
  *   Offset  0: Magic "RIOT:ROFL:1.1\0"  (14 bytes)
  *   Offset 14: RSA Signature             (256 bytes)
  *   Offset 270: Header struct
@@ -15,29 +15,29 @@
  *     +22 uint32 payloadOffset
  *     +26 uint32 payloadLength
  *
- *   Payload header:
- *     +0  uint64 matchId
- *     +8  uint32 matchLength (ms)
- *     +12 uint32 keyframeCount
- *     +16 uint32 chunkCount
- *     +20 uint32 endStartupChunkId
- *     +24 uint32 startGameChunkId
- *     +28 uint32 keyframeInterval
- *     +32 uint16 encryptionKeyLength
- *     +34 string encryptionKey (base64)
- *
- *   Payload chunks (Blowfish ECB encrypted, then zlib compressed):
- *     +0 uint32 chunkId
- *     +4 uint8  type  (1=chunk 2=keyframe)
- *     +5 uint32 nextChunkId
- *     +9 uint32 dataLength
- *     +13 uint32 keyframeId
- *     +17 N bytes data
+ * === New format (RIOT v2, patch ~15.x+) ===
+ *   Offset  0: Magic "RIOT"             (4 bytes)
+ *   Offset  4: uint16 = 2              (format version)
+ *   Offset  6: 8 bytes                 (hash/identifier)
+ *   Offset 14: uint8 versionStrLen
+ *   Offset 15: game version string     (versionStrLen bytes)
+ *   Offset 15+vLen: various header fields
+ *   Then: zstd-compressed payload chunks (9-byte header each)
+ *   Trailer: 256-byte signature + JSON metadata
+ *     {"gameLength":N,"lastGameChunkId":N,"lastKeyFrameId":N,"statsJson":"[{...}]"}
  */
 
-const fs   = require('fs');
-const zlib = require('zlib');
+const fs     = require('fs');
+const zlib   = require('zlib');
 const crypto = require('crypto');
+const path   = require('path');
+
+// fzstd for ROFL2 format (pure-JS zstd decompressor)
+let fzstd = null;
+try { fzstd = require('fzstd'); } catch (_) {}
+
+const LEGACY_MAGIC = 'RIOT:ROFL:1.1\x00';
+const NEW_MAGIC    = 'RIOT';
 
 /**
  * Parse a .rofl file.
@@ -46,12 +46,189 @@ const crypto = require('crypto');
 function parseROFL(filePath) {
   const buf = fs.readFileSync(filePath);
 
-  // Verify magic
-  if (buf.length < 14 || buf.slice(0, 14).toString('ascii') !== 'RIOT:ROFL:1.1\x00') {
-    throw new Error('유효하지 않은 ROFL 파일: 매직 바이트가 일치하지 않습니다');
+  if (buf.length < 4) throw new Error('유효하지 않은 ROFL 파일: 파일이 너무 짧습니다');
+
+  const magic4 = buf.slice(0, 4).toString('ascii');
+
+  if (magic4 === NEW_MAGIC && buf.length >= 6 && buf[4] === 0x02) {
+    return parseROFL2(buf, filePath);
   }
 
-  const ho = 270; // header offset (14 magic + 256 signature)
+  // Legacy format check
+  if (buf.length >= 14 && buf.slice(0, 14).toString('ascii') === LEGACY_MAGIC) {
+    return parseROFL1(buf, filePath);
+  }
+
+  throw new Error('유효하지 않은 ROFL 파일: 지원하지 않는 포맷입니다 (magic: ' + buf.slice(0, 8).toString('hex') + ')');
+}
+
+// ── ROFL2 (new format, patch 15.x+) ─────────────────────────────────────────
+function parseROFL2(buf, filePath) {
+  // Parse game version string from header
+  let gameVersion = '';
+  try {
+    const vLen = buf[14];
+    if (vLen > 0 && vLen < 64 && 15 + vLen <= buf.length) {
+      gameVersion = buf.slice(15, 15 + vLen).toString('ascii');
+    }
+  } catch (_) {}
+
+  // matchId from filename (e.g. KR-8113900197.rofl → "8113900197")
+  const basename = path.basename(filePath, '.rofl');
+  const matchId  = basename.replace(/^[A-Z]+-/, '');
+
+  // Find metadata JSON: scan for {"gameLength" in the file
+  // Metadata is at: [last_zstd_frame_end + 256 bytes of signature + JSON]
+  const GAME_LEN_KEY = Buffer.from('{"gameLength"');
+  const metaOffset   = buf.indexOf(GAME_LEN_KEY);
+  if (metaOffset < 0) {
+    return { matchId, matchLengthMs: 0, participants: [], events: [], eventsFound: false, gameVersion };
+  }
+
+  const metaStr = buf.slice(metaOffset, metaOffset + 500000).toString('utf8');
+
+  // Find JSON end
+  let depth = 0, jsonEnd = -1;
+  for (let i = 0; i < metaStr.length; i++) {
+    if (metaStr[i] === '{') depth++;
+    else if (metaStr[i] === '}') { depth--; if (depth === 0) { jsonEnd = i + 1; break; } }
+  }
+
+  let matchLengthMs = 0;
+  let participants  = [];
+
+  try {
+    const meta = JSON.parse(jsonEnd > 0 ? metaStr.substring(0, jsonEnd) : metaStr);
+    matchLengthMs = parseInt(meta.gameLength) || 0;
+
+    if (meta.statsJson) {
+      const stats = typeof meta.statsJson === 'string'
+        ? JSON.parse(meta.statsJson)
+        : meta.statsJson;
+      participants = parseROFL2Participants(stats);
+    }
+  } catch (e) {
+    console.warn('[ROFL2] 메타데이터 파싱 실패:', e.message);
+  }
+
+  // Event extraction from zstd chunks (best-effort, skips on error)
+  let events = [];
+  if (fzstd) {
+    try {
+      events = extractROFL2Events(buf);
+    } catch (e) {
+      console.warn('[ROFL2] 이벤트 추출 실패:', e.message);
+    }
+  }
+
+  return { matchId, matchLengthMs, participants, events, eventsFound: events.length > 0, gameVersion };
+}
+
+function parseROFL2Participants(stats) {
+  if (!Array.isArray(stats)) return [];
+  return stats.map((p, i) => {
+    // New format uses RIOT_ID_GAME_NAME + RIOT_ID_TAG_LINE for player name
+    const gameName = p.RIOT_ID_GAME_NAME || '';
+    const tagLine  = p.RIOT_ID_TAG_LINE  || '';
+    const summonerName = gameName
+      ? (tagLine ? `${gameName} #${tagLine}` : gameName)
+      : (p.SUMMONER_NAME || p.NAME || `플레이어${i + 1}`);
+
+    return {
+      id:           i + 1,
+      championName: p.SKIN || p.championName || `챔피언${i + 1}`,
+      summonerName,
+      team:         parseInt(p.TEAM || p.teamId || 0),
+      kills:        parseInt(p.CHAMPIONS_KILLED || p.kills  || 0),
+      deaths:       parseInt(p.NUM_DEATHS || p.deaths || 0),
+      assists:      parseInt(p.ASSISTS || p.assists || 0),
+    };
+  });
+}
+
+/**
+ * Extract activity events from ROFL2 using chunk-size heuristics.
+ *
+ * ROFL2 packets are encrypted with a per-patch lookup table cipher,
+ * making direct text extraction impossible. Instead, we use the
+ * decompressed chunk size as a proxy for game activity:
+ *   larger chunk = more packets = more in-game events = likely fight.
+ *
+ * Each type=1 chunk covers ~30 seconds of game time.
+ * The float32 at bytes 1-4 of the decompressed data is the chunk start time.
+ * Chunks with z-score >= 0.8 above average are returned as 'activity' events.
+ */
+function extractROFL2Events(buf) {
+  const ZSTD_MAGIC = Buffer.from([0x28, 0xb5, 0x2f, 0xfd]);
+  const chunks = [];
+  let pos = 0;
+
+  // Scan all zstd frames; advance by compSize to skip the frame body reliably
+  while (pos < buf.length) {
+    const idx = buf.indexOf(ZSTD_MAGIC, pos);
+    if (idx < 0) break;
+
+    // 9-byte chunk header immediately before zstd magic:
+    //   [type(1)][decompressedSize(4)][compressedSize(4)][zstd frame...]
+    if (idx < 9) { pos = idx + 4; continue; }
+
+    const chunkType = buf[idx - 9];
+    const compSize  = buf.readUInt32LE(idx - 4);
+
+    if (compSize < 4 || compSize > 50 * 1024 * 1024 || idx + compSize > buf.length) {
+      pos = idx + 4;
+      continue;
+    }
+
+    let startTimeS = -1;
+    let decompLen  = 0;
+    try {
+      const chunkData    = buf.slice(idx, idx + compSize);
+      const decompressed = Buffer.from(fzstd.decompress(chunkData));
+      decompLen = decompressed.length;
+      // First 5 bytes of decompressed data: [type(1)][float32 startTime LE(4)]
+      if (decompressed.length >= 5) {
+        startTimeS = decompressed.readFloatLE(1);
+        if (!isFinite(startTimeS) || startTimeS < 0 || startTimeS > 7200) startTimeS = -1;
+      }
+    } catch (_) {}
+
+    if (startTimeS >= 0 && decompLen > 0) {
+      chunks.push({ chunkType, startTimeS, decompLen });
+    }
+
+    pos = idx + compSize; // advance past this compressed frame
+  }
+
+  if (chunks.length < 4) return [];
+
+  // Only regular game chunks (type=1); skip first 90 s (loading/pre-game)
+  const regular = chunks.filter(c => c.chunkType === 1 && c.startTimeS >= 90);
+  if (regular.length < 4) return [];
+
+  // Z-score of decompressed size detects high-activity (fight) windows
+  const sizes  = regular.map(c => c.decompLen);
+  const mean   = sizes.reduce((a, b) => a + b, 0) / sizes.length;
+  const stddev = Math.sqrt(sizes.reduce((a, b) => a + (b - mean) ** 2, 0) / sizes.length);
+  if (stddev === 0) return [];
+
+  const events = [];
+  for (const c of regular) {
+    const z = (c.decompLen - mean) / stddev;
+    if (z >= 0.8) {
+      events.push({
+        type:      'activity',
+        timeS:     Math.round(c.startTimeS),
+        intensity: Math.round(z * 10) / 10,
+      });
+    }
+  }
+  return events;
+}
+
+// ── ROFL1 (legacy format) ────────────────────────────────────────────────────
+function parseROFL1(buf, filePath) {
+  const ho = 270;
   if (buf.length < ho + 30) throw new Error('ROFL 파일이 너무 짧습니다');
 
   const metaOffset       = buf.readUInt32LE(ho + 6);
@@ -61,23 +238,20 @@ function parseROFL(filePath) {
   const payloadOffset    = buf.readUInt32LE(ho + 22);
   const payloadLen       = buf.readUInt32LE(ho + 26);
 
-  // Parse metadata JSON
   if (metaOffset + metaLen > buf.length) throw new Error('메타데이터 오프셋이 파일 크기를 초과합니다');
   const metaStr = buf.slice(metaOffset, metaOffset + metaLen).toString('utf8');
   const meta    = JSON.parse(metaStr);
 
-  // Parse participant list from statsJson
   let participants = [];
   try {
     if (meta.statsJson) {
       const stats = JSON.parse(meta.statsJson);
-      participants = parseParticipants(stats);
+      participants = parseLegacyParticipants(stats);
     }
   } catch (e) {
-    console.warn('[ROFL] statsJson 파싱 실패:', e.message);
+    console.warn('[ROFL1] statsJson 파싱 실패:', e.message);
   }
 
-  // Parse payload header
   let matchId = '0', matchLengthMs = 0, encryptionKey = null;
   if (payloadHdrOffset + payloadHdrLen <= buf.length && payloadHdrLen >= 34) {
     try {
@@ -89,25 +263,23 @@ function parseROFL(filePath) {
         encryptionKey = ph.slice(34, 34 + ekLen).toString('ascii');
       }
     } catch (e) {
-      console.warn('[ROFL] 페이로드 헤더 파싱 실패:', e.message);
+      console.warn('[ROFL1] 페이로드 헤더 파싱 실패:', e.message);
     }
   }
 
-  // Try to extract kill/death/assist events from payload chunks
   let events = [];
   if (encryptionKey && payloadLen > 0 && payloadOffset + payloadLen <= buf.length) {
     try {
-      events = extractEvents(buf, payloadOffset, payloadLen, encryptionKey);
+      events = extractLegacyEvents(buf, payloadOffset, payloadLen, encryptionKey);
     } catch (e) {
-      console.warn('[ROFL] 이벤트 추출 실패:', e.message);
+      console.warn('[ROFL1] 이벤트 추출 실패:', e.message);
     }
   }
 
   return { matchId, matchLengthMs, participants, events, eventsFound: events.length > 0 };
 }
 
-// ── Participants ────────────────────────────────────────────────────────────
-function parseParticipants(stats) {
+function parseLegacyParticipants(stats) {
   const arr = Array.isArray(stats)
     ? stats
     : (stats.playerStatSummaries || stats.participants || stats.playerStats || []);
@@ -119,30 +291,26 @@ function parseParticipants(stats) {
     team:         parseInt(p.TEAM   || p.teamId   || 0),
     kills:        parseInt(p.KILLS  || p.CHAMPIONS_KILLED || p.kills  || 0),
     deaths:       parseInt(p.DEATHS || p.NUM_DEATHS       || p.deaths || 0),
-    assists:      parseInt(p.ASSISTS || p.assists  || 0)
+    assists:      parseInt(p.ASSISTS || p.assists  || 0),
   }));
 }
 
-// ── Payload chunk iteration ─────────────────────────────────────────────────
-function extractEvents(buf, payloadOffset, payloadLen, encryptionKey) {
-  const events   = [];
-  let   offset   = payloadOffset;
-  const end      = payloadOffset + payloadLen;
-  const MAX      = 300; // max chunks to scan
-  let   n        = 0;
+function extractLegacyEvents(buf, payloadOffset, payloadLen, encryptionKey) {
+  const events = [];
+  let   offset = payloadOffset;
+  const end    = payloadOffset + payloadLen;
+  const MAX    = 300;
+  let   n      = 0;
 
   while (offset < end - 17 && n < MAX) {
     try {
       const dataLen = buf.readUInt32LE(offset + 9);
-      offset += 17; // chunk header size
-
+      offset += 17;
       if (dataLen === 0 || dataLen > 10 * 1024 * 1024) break;
       if (offset + dataLen > end) break;
-
-      const chunkData = buf.slice(offset, offset + dataLen);
+      const chunkData    = buf.slice(offset, offset + dataLen);
       offset += dataLen;
       n++;
-
       const decompressed = tryDecryptDecompress(chunkData, encryptionKey);
       if (decompressed) events.push(...scanForKillEvents(decompressed));
     } catch (_) {
@@ -155,18 +323,15 @@ function extractEvents(buf, payloadOffset, payloadLen, encryptionKey) {
 
 function tryDecryptDecompress(data, encryptionKey) {
   let buf = data;
-
-  // Attempt Blowfish ECB decryption (may fail on Node 18+ with OpenSSL 3)
   try {
-    const keyBuf  = Buffer.from(encryptionKey, 'base64');
+    const keyBuf   = Buffer.from(encryptionKey, 'base64');
     const decipher = crypto.createDecipheriv('bf-ecb', keyBuf, Buffer.alloc(0));
     decipher.setAutoPadding(false);
     buf = Buffer.concat([decipher.update(data), decipher.final()]);
   } catch (_) {
-    buf = data; // fall through to raw inflate
+    buf = data;
   }
 
-  // Try various zlib modes
   for (const fn of [
     () => zlib.inflateSync(buf),
     () => zlib.inflateRawSync(buf),
@@ -179,11 +344,9 @@ function tryDecryptDecompress(data, encryptionKey) {
   return null;
 }
 
-// ── Event scanning ──────────────────────────────────────────────────────────
+// ── Event scanning (shared) ──────────────────────────────────────────────────
 function scanForKillEvents(data) {
-  // Convert to string (limit for performance)
   const text = data.toString('utf8', 0, Math.min(data.length, 512 * 1024));
-
   if (text.includes('ChampionKill') || text.includes('championKill')) {
     return extractJsonKillEvents(text);
   }
@@ -201,7 +364,6 @@ function extractJsonKillEvents(text) {
     const objStart = text.lastIndexOf('{', idx);
     if (objStart < 0) { pos = idx + 12; continue; }
 
-    // Find matching closing brace
     let depth = 0, objEnd = -1;
     for (let i = objStart; i < Math.min(text.length, objStart + 1000); i++) {
       if (text[i] === '{') depth++;

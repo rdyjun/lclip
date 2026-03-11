@@ -18,6 +18,7 @@
       <nav class="header-nav">
         <a href="#" class="nav-link active" data-page="videos">내 영상</a>
         <a href="#" class="nav-link" data-page="projects">쇼츠 프로젝트</a>
+        <button class="btn btn-sm btn-secondary" id="btn-ai-settings" style="margin-left:12px">⚙ AI 설정</button>
       </nav>
     </header>
 
@@ -82,10 +83,15 @@
         <div class="page-header">
           <h1>쇼츠 프로젝트</h1>
         </div>
-        <div class="project-grid" id="project-grid">
-          <div class="empty-state" id="empty-projects">
-            <p>생성된 쇼츠 프로젝트가 없습니다</p>
-            <p class="sub">영상 라이브러리에서 쇼츠 만들기를 클릭하세요</p>
+        <div class="projects-layout">
+          <div class="projects-sidebar" id="projects-sidebar"></div>
+          <div class="projects-main">
+            <div class="project-grid" id="project-grid">
+              <div class="empty-state" id="empty-projects">
+                <p>생성된 쇼츠 프로젝트가 없습니다</p>
+                <p class="sub">영상 라이브러리에서 쇼츠 만들기를 클릭하세요</p>
+              </div>
+            </div>
           </div>
         </div>
       </div>
@@ -109,6 +115,7 @@
         <p class="video-meta"></p>
       </div>
       <div class="video-actions">
+        <button class="btn btn-sm btn-ai btn-ai-analyze">✨ AI 쇼츠</button>
         <button class="btn btn-sm btn-primary btn-create-short">✂ 쇼츠 만들기</button>
         <button class="btn btn-sm btn-danger btn-delete">삭제</button>
       </div>
@@ -179,6 +186,48 @@
       <div class="modal-footer">
         <button class="btn btn-secondary" id="btn-rofl-back">← 뒤로</button>
         <button class="btn btn-primary" id="btn-rofl-confirm" disabled>클립 생성 후 편집기 열기</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: AI 하이라이트 분석 -->
+  <div class="modal-overlay" id="modal-ai" style="display:none">
+    <div class="modal" style="max-width:540px;width:95%">
+      <div class="modal-header">
+        <h2>✨ AI 하이라이트 분석</h2>
+        <button class="modal-close" id="ai-modal-close">✕</button>
+      </div>
+      <div class="modal-body" id="ai-modal-body">
+        <!-- filled dynamically -->
+      </div>
+      <div class="modal-footer" id="ai-modal-footer" style="display:none">
+        <button class="btn btn-secondary" id="btn-ai-cancel">취소</button>
+        <button class="btn btn-ai btn-ai-confirm" id="btn-ai-confirm">편집기 열기</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: AI 설정 -->
+  <div class="modal-overlay" id="modal-ai-settings" style="display:none">
+    <div class="modal" style="max-width:540px;width:95%">
+      <div class="modal-header">
+        <h2>⚙ AI 분석 설정</h2>
+        <button class="modal-close" id="ai-settings-close">✕</button>
+      </div>
+      <div class="modal-body">
+        <label class="form-label">참고 영상 URL</label>
+        <p class="form-hint" style="margin-bottom:8px">자막 스타일과 편집 방식을 모방할 유튜브 영상 링크를 한 줄에 하나씩 입력하세요.<br>비워두면 기본 스타일을 사용합니다.</p>
+        <textarea class="form-input" id="ai-settings-refs" rows="5"
+          placeholder="https://www.youtube.com/watch?v=...&#10;https://www.youtube.com/watch?v=..."></textarea>
+
+        <label class="form-label" style="margin-top:16px;display:block">영상 컨셉 / 추가 지침</label>
+        <p class="form-hint" style="margin-bottom:8px">분석 시 AI에게 전달할 추가 지침을 자유롭게 입력하세요.<br>예) "탑라인 위주로 분석해줘", "솔로킬 장면을 강조해줘"</p>
+        <textarea class="form-input" id="ai-settings-concept" rows="4"
+          placeholder="예) 이 채널은 서포터 위주 플레이를 보여줍니다. 탱킹과 이니시에이팅 장면을 우선해주세요."></textarea>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" id="ai-settings-cancel">취소</button>
+        <button class="btn btn-primary" id="ai-settings-save">저장</button>
       </div>
     </div>
   </div>

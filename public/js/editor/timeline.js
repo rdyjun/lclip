@@ -241,9 +241,8 @@ const Timeline = (() => {
 
     EditorState.selectClip(layerId, clipId);
 
-    // Razor tool: split on click (filtered clips cannot be cut)
+    // Razor tool: split on click
     if (type === 'move' && EditorState.getActiveTool() === 'razor') {
-      if (clip.isFiltered) return; // filtered clips are cut-protected
       const rect        = e.currentTarget.getBoundingClientRect();
       const localOffset = e.clientX - rect.left;
       const t           = clip.startTime + localOffset / pxPerSec;

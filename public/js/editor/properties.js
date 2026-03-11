@@ -68,7 +68,7 @@ const Properties = (() => {
 
       const note = document.createElement('p');
       note.style.cssText = 'font-size:11px;color:var(--text-muted);margin-bottom:8px';
-      note.textContent = 'ROFL로 생성된 필터 클립입니다. 자르기(C)는 사용할 수 없습니다.';
+      note.textContent = 'ROFL로 생성된 필터 클립입니다.';
       filterSection.appendChild(note);
 
       filterSection.appendChild(makeRow('필터 시작(s)', makeNumberInput((clip.filterStart || clip.srcStart || 0).toFixed(2), v => {
@@ -97,7 +97,60 @@ const Properties = (() => {
       EditorState.updateClip(layerId, clipId, { opacity: parseFloat(v) / 100 });
       Player.renderFrame();
     })));
+    section.appendChild(makeRow('볼륨', makeRangeInput((clip.volume !== undefined ? clip.volume : 1) * 100, 0, 100, v => {
+      EditorState.updateClip(layerId, clipId, { volume: parseFloat(v) / 100 });
+      const videoEl = document.getElementById('preview-video');
+      if (videoEl) videoEl.volume = parseFloat(v) / 100;
+    })));
     body.appendChild(section);
+
+    // ── Speed ──────────────────────────────────────────────────────────────
+    const speedSection = makeSection('재생 속도');
+    const currentPct = Math.round((clip.speed || 1) * 100);
+
+    const speedWrap = document.createElement('div');
+    speedWrap.style.cssText = 'display:flex;align-items:center;gap:6px';
+
+    const slider = document.createElement('input');
+    slider.type = 'range';
+    slider.className = 'prop-input';
+    slider.min = 10; slider.max = 400; slider.step = 5;
+    slider.value = currentPct;
+
+    const numInput = document.createElement('input');
+    numInput.type = 'number';
+    numInput.className = 'prop-input';
+    numInput.min = 10; numInput.max = 400; numInput.step = 5;
+    numInput.value = currentPct;
+    numInput.style.cssText = 'width:60px;flex-shrink:0';
+
+    const pctLabel = document.createElement('span');
+    pctLabel.style.cssText = 'font-size:11px;color:var(--text-secondary)';
+    pctLabel.textContent = '%';
+
+    function applySpeed(pct) {
+      const s = Math.max(0.1, Math.min(4, pct / 100));
+      const srcDur = (clip.srcEnd || 0) - (clip.srcStart || 0);
+      const newEndTime = clip.startTime + srcDur / s;
+      EditorState.updateClip(layerId, clipId, { speed: s, endTime: newEndTime });
+      Timeline.render();
+      Player.renderFrame();
+    }
+
+    slider.addEventListener('input', () => {
+      numInput.value = slider.value;
+      applySpeed(parseFloat(slider.value));
+    });
+    numInput.addEventListener('change', () => {
+      slider.value = numInput.value;
+      applySpeed(parseFloat(numInput.value));
+    });
+
+    speedWrap.appendChild(slider);
+    speedWrap.appendChild(numInput);
+    speedWrap.appendChild(pctLabel);
+    speedSection.appendChild(speedWrap);
+    body.appendChild(speedSection);
 
     const posSection = makeSection('위치/크기');
     posSection.appendChild(makeRow('X', makeNumberInput(clip.x || 0, v => {

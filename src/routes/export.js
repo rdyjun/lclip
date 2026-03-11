@@ -29,8 +29,17 @@ router.post('/:projectId', async (req, res) => {
       }
     };
 
+    // Browser-rendered subtitle PNGs — use instead of server-side node-canvas rendering
+    // so the exported font matches the editor preview exactly.
+    const subtitlePngs = Array.isArray(req.body?.subtitlePngs) ? req.body.subtitlePngs : [];
+    const subtitlePngMap = Object.fromEntries(
+      subtitlePngs
+        .filter(s => s.clipId && s.png)
+        .map(s => [s.clipId, Buffer.from(s.png, 'base64')])
+    );
+
     // Process video
-    exportVideo(project, outputPath, onProgress)
+    exportVideo(project, outputPath, onProgress, subtitlePngMap)
       .then(() => {
         Projects.update(project.id, {
           exportStatus: 'done',

@@ -99,6 +99,18 @@ const Player = (() => {
   }
 
   // ── Time / Playback ────────────────────────────────────────────────────────
+
+  // play() can fail with AbortError when the video element is still seeking.
+  // Retry once the browser fires 'canplay' (buffered enough to play).
+  function playOrDefer(el) {
+    el.play().catch(() => {
+      el.addEventListener('canplay', function onReady() {
+        el.removeEventListener('canplay', onReady);
+        if (EditorState.isPlaying()) el.play().catch(() => {});
+      });
+    });
+  }
+
   function onTimeChanged(t) {
     updateTimecode(t);
     if (!EditorState.isPlaying()) {
@@ -114,7 +126,7 @@ const Player = (() => {
       _lastBoundaryClipId = null;
       _preloadClipId      = null;
       syncVideoToTime(EditorState.getCurrentTime());
-      videoEl.play().catch(() => {});
+      playOrDefer(videoEl);
       startAudioPlayback(EditorState.getCurrentTime());
       lastTimestamp = null;
       animFrameId   = requestAnimationFrame(playLoop);
@@ -143,7 +155,10 @@ const Player = (() => {
       videoEl.src = src;
       videoEl.setAttribute('data-clip-src', src);
     }
-    const vt = clip.srcStart + (t - clip.startTime);
+    const speed = clip.speed || 1;
+    videoEl.playbackRate = speed;
+    videoEl.volume = clip.volume !== undefined ? clip.volume : 1;
+    const vt = clip.srcStart + (t - clip.startTime) * speed;
     if (Math.abs(videoEl.currentTime - vt) > 0.08) videoEl.currentTime = vt;
   }
 
@@ -171,6 +186,7 @@ const Player = (() => {
     if (_preloadClipId === nextClip.id && standby.readyState >= 2) {
       // Seamless swap — standby is already at the right frame
       videoEl = standby;
+      videoEl.playbackRate = nextClip.speed || 1;
       videoEl.play().catch(() => {});
       old.pause();
     } else {
@@ -180,7 +196,7 @@ const Player = (() => {
         videoEl.setAttribute('data-clip-src', nextClip.src);
       }
       videoEl.currentTime = nextClip.srcStart;
-      videoEl.play().catch(() => {});
+      playOrDefer(videoEl);
     }
     _preloadClipId = null;
   }
@@ -286,7 +302,8 @@ const Player = (() => {
     let newTime;
 
     if (clip && videoEl.readyState >= 2 && !videoEl.paused) {
-      const derived = clip.startTime + (videoEl.currentTime - clip.srcStart);
+      const speed = clip.speed || 1;
+      const derived = clip.startTime + (videoEl.currentTime - clip.srcStart) / speed;
 
       // Guard: if derived time diverges from editor time by >0.5 s, the video element
       // is still transitioning (src change / seek not yet settled) — use wall-clock timer.

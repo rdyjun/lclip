@@ -1,3 +1,6 @@
+// Load .env for local development (Docker injects vars via docker-compose env_file)
+require('dotenv').config();
+
 const express = require('express');
 const cors = require('cors');
 const path = require('path');
@@ -53,12 +56,16 @@ const projectsRouter = require('./src/routes/projects');
 const exportRouter   = require('./src/routes/export');
 const roflRouter     = require('./src/routes/rofl');
 const fontsRouter    = require('./src/routes/fonts');
+const aiRouter       = require('./src/routes/ai');
+const audioRouter    = require('./src/routes/audio');
 
 app.use('/api/videos',   videosRouter);
 app.use('/api/projects', projectsRouter);
 app.use('/api/export',   exportRouter);
 app.use('/api/rofl',     roflRouter);
 app.use('/api/fonts',    fontsRouter);
+app.use('/api/ai',       aiRouter);
+app.use('/api/audio',    audioRouter);
 
 // Serve editor page with COOP/COEP headers required by FFmpeg.wasm
 // (SharedArrayBuffer is only available in cross-origin isolated contexts).

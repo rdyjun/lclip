@@ -66,18 +66,17 @@
     const selLayerId = EditorState.getSelectedLayer();
 
     // Collect clips to split (selected clip only, or all visible clips at this time)
-    // Filtered clips (isFiltered:true) cannot be cut
     const toSplit = [];
     if (selClipId && selLayerId) {
       const clip = EditorState.getClip(selLayerId, selClipId);
-      if (clip && !clip.isFiltered && t > clip.startTime && t < clip.endTime) {
+      if (clip && t > clip.startTime && t < clip.endTime) {
         toSplit.push({ layerId: selLayerId, clipId: selClipId });
       }
     } else {
       project.layers.forEach(layer => {
         if (layer.visible === false) return;
         layer.clips.forEach(clip => {
-          if (!clip.isFiltered && t > clip.startTime && t < clip.endTime) {
+          if (t > clip.startTime && t < clip.endTime) {
             toSplit.push({ layerId: layer.id, clipId: clip.id });
           }
         });
@@ -276,7 +275,13 @@
       startClientExport(project);
     } else {
       try {
-        await fetch(`/api/export/${project.id}`, { method: 'POST' });
+        document.getElementById('export-status-text').textContent = '자막 렌더링 중...';
+        const subtitlePngs = renderSubtitlePngsForExport(project);
+        await fetch(`/api/export/${project.id}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ subtitlePngs }),
+        });
         pollExportStatus(project.id);
       } catch (err) {
         document.getElementById('export-status-text').textContent = '오류: ' + err.message;
@@ -284,6 +289,74 @@
       }
     }
   });
+
+  // Render all subtitle clips to PNG using the browser's canvas (same rendering as the editor preview).
+  // Returns [{clipId, png: base64String}] for each visible subtitle clip with text.
+  function renderSubtitlePngsForExport(project) {
+    const OUTPUT_W = 1080, OUTPUT_H = 1920;
+    const allSubtitleClips = (project.layers || [])
+      .filter(l => l.visible !== false)
+      .flatMap(l => l.clips.filter(c => c.type === 'subtitle' && c.text));
+
+    if (!allSubtitleClips.length) return [];
+
+    const offscreen = document.createElement('canvas');
+    offscreen.width  = OUTPUT_W;
+    offscreen.height = OUTPUT_H;
+    const ctx = offscreen.getContext('2d');
+
+    return allSubtitleClips.map(clip => {
+      ctx.clearRect(0, 0, OUTPUT_W, OUTPUT_H);
+
+      const fontSize = clip.fontSize || 48;
+      const cx       = clip.x != null ? clip.x : OUTPUT_W / 2;
+      const cy       = clip.y != null ? clip.y : 200;
+      const padding  = clip.backgroundPadding || 16;
+      const lineH    = fontSize * 1.3;
+      const lines    = (clip.text || '').split('\n');
+
+      ctx.font         = `${clip.bold ? 'bold ' : ''}${fontSize}px ${clip.fontFamily || 'Noto Sans KR, sans-serif'}`;
+      ctx.textAlign    = clip.align || 'center';
+      ctx.textBaseline = 'top';
+
+      const totalH = lines.length * lineH;
+      const maxW   = Math.max(...lines.map(l => ctx.measureText(l).width), 1);
+
+      if (clip.backgroundColor && clip.backgroundColor !== 'none') {
+        ctx.fillStyle = clip.backgroundColor;
+        const r = clip.borderRadius || 8;
+        const bx = cx - maxW / 2 - padding, by = cy - padding;
+        const bw = maxW + padding * 2,       bh = totalH + padding * 2;
+        ctx.beginPath();
+        ctx.moveTo(bx + r, by); ctx.lineTo(bx + bw - r, by);
+        ctx.quadraticCurveTo(bx + bw, by, bx + bw, by + r);
+        ctx.lineTo(bx + bw, by + bh - r);
+        ctx.quadraticCurveTo(bx + bw, by + bh, bx + bw - r, by + bh);
+        ctx.lineTo(bx + r, by + bh);
+        ctx.quadraticCurveTo(bx, by + bh, bx, by + bh - r);
+        ctx.lineTo(bx, by + r); ctx.quadraticCurveTo(bx, by, bx + r, by);
+        ctx.closePath(); ctx.fill();
+      }
+
+      // Always reset shadow state to avoid bleed-through from previous clips
+      ctx.shadowOffsetX = 0; ctx.shadowOffsetY = 0;
+      ctx.shadowBlur    = 0; ctx.shadowColor   = 'transparent';
+      if (clip.shadow && clip.shadow !== 'none') {
+        const p = clip.shadow.split(' ');
+        if (p.length >= 4) {
+          ctx.shadowOffsetX = parseFloat(p[0]); ctx.shadowOffsetY = parseFloat(p[1]);
+          ctx.shadowBlur    = parseFloat(p[2]); ctx.shadowColor   = p.slice(3).join(' ');
+        }
+      }
+
+      ctx.fillStyle = clip.color || '#ffffff';
+      lines.forEach((l, i) => ctx.fillText(l, cx, cy + i * lineH));
+
+      // Strip the data URL prefix to get raw base64
+      const png = offscreen.toDataURL('image/png').split(',')[1];
+      return { clipId: clip.id, png };
+    });
+  }
 
   async function startClientExport(project) {
     const fill     = document.getElementById('export-progress-fill');
@@ -468,7 +541,6 @@
   EditorState.on('splitClip', ({ layerId, clipId, t }) => {
     const clip = EditorState.getClip(layerId, clipId);
     if (!clip || t <= clip.startTime || t >= clip.endTime) return;
-    if (clip.isFiltered) return; // filtered clips cannot be split
     const ratio = (t - clip.startTime) / (clip.endTime - clip.startTime);
     const splitSrc = (clip.srcStart || 0) + ((clip.srcEnd || 0) - (clip.srcStart || 0)) * ratio;
     const newClip = { ...clip, id: EditorState.genId(), startTime: t, endTime: clip.endTime, srcStart: splitSrc, srcEnd: clip.srcEnd };
