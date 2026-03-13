@@ -19,6 +19,9 @@
         <a href="#" class="nav-link active" data-page="videos">내 영상</a>
         <a href="#" class="nav-link" data-page="projects">쇼츠 프로젝트</a>
         <button class="btn btn-sm btn-secondary" id="btn-ai-settings" style="margin-left:12px">⚙ AI 설정</button>
+        <button class="btn btn-sm btn-ai" id="btn-ai-queue" style="margin-left:8px;display:none">
+          ✨ AI 분석 <span id="ai-queue-badge" style="background:rgba(255,255,255,0.25);border-radius:10px;padding:1px 7px;font-size:11px;font-weight:700;margin-left:4px">0</span>
+        </button>
       </nav>
     </header>
 
@@ -228,6 +231,19 @@
       <div class="modal-footer">
         <button class="btn btn-secondary" id="ai-settings-cancel">취소</button>
         <button class="btn btn-primary" id="ai-settings-save">저장</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: AI 분석 큐 -->
+  <div class="modal-overlay" id="modal-ai-queue" style="display:none">
+    <div class="modal" style="max-width:600px;width:95%">
+      <div class="modal-header">
+        <h2>✨ AI 분석 현황</h2>
+        <button class="modal-close" id="ai-queue-close">✕</button>
+      </div>
+      <div class="modal-body" id="ai-queue-body" style="max-height:500px;overflow-y:auto">
+        <p style="color:var(--text-secondary);font-size:13px">진행 중인 분석이 없습니다.</p>
       </div>
     </div>
   </div>

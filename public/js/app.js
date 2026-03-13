@@ -647,36 +647,22 @@ function openAiModal(video) {
   document.getElementById('modal-ai').style.display = 'flex';
 }
 
-function startAiAnalysis() {
+async function startAiAnalysis() {
   document.getElementById('btn-ai-start').remove();
   document.getElementById('ai-progress-bar').style.display = 'block';
   document.getElementById('ai-progress-text').style.display = 'block';
-  setAiProgress(5, '분석 준비 중...');
-
-  const es = new EventSource(`/api/ai/analyze?videoId=${_aiVideo.id}`);
-
-  es.addEventListener('progress', e => {
-    const { message, percent } = JSON.parse(e.data);
-    setAiProgress(percent, message);
-  });
-
-  es.addEventListener('result', e => {
-    es.close();
-    const { shorts, music } = JSON.parse(e.data);
-    _aiClips = shorts;
-    _aiMusic = music || [];
-    renderAiResults(shorts, music || []);
-  });
-
-  es.addEventListener('error', e => {
-    es.close();
-    let msg = 'AI 분석 중 오류가 발생했습니다. 서버 로그를 확인하세요.';
-    if (e.data) {
-      try { msg = JSON.parse(e.data).message; } catch (_) {}
-    }
+  setAiProgress(10, '분석 요청 중...');
+  try {
+    const { jobId, existing } = await API.post('/api/ai/analyze', { videoId: _aiVideo.id });
+    setAiProgress(100, existing ? '이미 분석 중인 영상입니다.' : '분석이 시작되었습니다. 완료되면 상단 버튼에서 확인할 수 있습니다.');
+    document.getElementById('ai-progress-bar').style.display = 'none';
+    document.getElementById('ai-modal-footer').style.display = 'none';
+    await refreshAiQueue();
+    setTimeout(() => { document.getElementById('modal-ai').style.display = 'none'; }, 1800);
+  } catch (err) {
     document.getElementById('ai-modal-body').innerHTML =
-      `<p style="color:#e74c3c;font-size:13px">❌ ${msg}</p>`;
-  });
+      `<p style="color:#e74c3c;font-size:13px">❌ ${err.message}</p>`;
+  }
 }
 
 function setAiProgress(percent, message) {
@@ -806,6 +792,146 @@ document.getElementById('btn-ai-confirm').addEventListener('click', async () => 
     btn.textContent = `쇼츠 ${_aiClips.length}개 생성`;
   }
 });
+
+// ── AI Queue ──────────────────────────────────────────────────────────────────
+let _queueJobs = [];
+
+async function refreshAiQueue() {
+  try {
+    _queueJobs = await API.get('/api/ai/jobs');
+    updateAiQueueBadge();
+    if (document.getElementById('modal-ai-queue').style.display !== 'none') {
+      renderAiQueue();
+    }
+  } catch (_) {}
+}
+
+function updateAiQueueBadge() {
+  const btn = document.getElementById('btn-ai-queue');
+  const badge = document.getElementById('ai-queue-badge');
+  const running = _queueJobs.filter(j => j.status === 'running' || j.status === 'queued').length;
+  const total = _queueJobs.length;
+  if (total === 0) {
+    btn.style.display = 'none';
+    return;
+  }
+  btn.style.display = '';
+  badge.textContent = total;
+  const hasError = _queueJobs.some(j => j.status === 'error');
+  btn.style.background = running ? '#2980b9' : hasError ? '#c0392b' : '#27ae60';
+}
+
+function renderAiQueue() {
+  const body = document.getElementById('ai-queue-body');
+  if (!_queueJobs.length) {
+    body.innerHTML = '<p style="color:var(--text-secondary);font-size:13px">진행 중인 분석이 없습니다.</p>';
+    return;
+  }
+  let html = '<div style="display:flex;flex-direction:column;gap:12px">';
+  _queueJobs.forEach(job => {
+    const statusColor = { queued: '#888', running: '#3498db', done: '#27ae60', error: '#e74c3c' }[job.status] || '#888';
+    const statusLabel = { queued: '대기 중', running: '분석 중', done: '완료 — 등록 대기', error: '오류' }[job.status] || job.status;
+    const timeAgo = Math.round((Date.now() - job.createdAt) / 60000);
+    const timeStr = timeAgo < 1 ? '방금 전' : `${timeAgo}분 전`;
+
+    let actions = '';
+    if (job.status === 'done') {
+      const count = job.result?.shorts?.length || 0;
+      actions = `
+        <div style="display:flex;gap:8px;margin-top:10px">
+          <button class="btn btn-primary btn-sm" onclick="approveAiJob('${job.id}')">✅ 쇼츠 ${count}개 등록</button>
+          <button class="btn btn-secondary btn-sm" onclick="rejectAiJob('${job.id}')">✕ 반려</button>
+        </div>`;
+    } else if (job.status === 'error') {
+      actions = `
+        <div style="margin-top:8px;font-size:12px;color:#e74c3c">${job.error || '알 수 없는 오류'}</div>
+        <div style="margin-top:8px"><button class="btn btn-secondary btn-sm" onclick="rejectAiJob('${job.id}')">✕ 닫기</button></div>`;
+    } else {
+      const pct = job.progress?.percent || 0;
+      const msg = job.progress?.message || '';
+      actions = `
+        <div style="margin-top:10px">
+          <div class="progress-bar"><div class="progress-fill" style="width:${pct}%"></div></div>
+          <p style="font-size:12px;color:var(--text-muted);margin-top:4px">${msg}</p>
+        </div>`;
+    }
+
+    html += `
+      <div style="background:var(--bg-hover);border-radius:8px;padding:14px 16px">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
+          <span style="font-size:13px;font-weight:600;flex:1">${job.videoName}</span>
+          <span style="font-size:11px;color:${statusColor};font-weight:600">${statusLabel}</span>
+          <span style="font-size:11px;color:var(--text-muted)">${timeStr}</span>
+        </div>
+        ${actions}
+      </div>`;
+  });
+  html += '</div>';
+  body.innerHTML = html;
+}
+
+async function approveAiJob(jobId) {
+  const job = _queueJobs.find(j => j.id === jobId);
+  if (!job || !job.result) return;
+  const { shorts, music } = job.result;
+
+  const btn = document.querySelector(`[onclick="approveAiJob('${jobId}')"]`);
+  if (btn) { btn.disabled = true; btn.textContent = '생성 중...'; }
+
+  try {
+    const projects = await Promise.all(shorts.map(short =>
+      API.post('/api/projects', {
+        sourceVideoId: job.videoId,
+        name: short.title,
+        musicRecommendations: music || [],
+        roflClips: short.segments.map((s, i) => ({
+          srcStart: s.srcStart,
+          srcEnd: s.srcEnd,
+          eventTypes: ['highlight'],
+          subtitles: i === 0 ? short.subtitles || [] : [],
+        })),
+      })
+    ));
+
+    await API.delete(`/api/ai/jobs/${jobId}`);
+    await refreshAiQueue();
+
+    document.getElementById('modal-ai-queue').style.display = 'none';
+    if (projects.length === 1) {
+      window.location.href = `/editor/${projects[0].id}`;
+    } else {
+      await loadProjects();
+      document.querySelector('[data-page="projects"]')?.click();
+    }
+  } catch (err) {
+    alert('프로젝트 생성 실패: ' + err.message);
+    if (btn) { btn.disabled = false; btn.textContent = `✅ 쇼츠 ${shorts.length}개 등록`; }
+  }
+}
+
+async function rejectAiJob(jobId) {
+  try {
+    await API.delete(`/api/ai/jobs/${jobId}`);
+    await refreshAiQueue();
+  } catch (err) {
+    alert('삭제 실패: ' + err.message);
+  }
+}
+
+document.getElementById('btn-ai-queue').addEventListener('click', () => {
+  renderAiQueue();
+  document.getElementById('modal-ai-queue').style.display = 'flex';
+});
+document.getElementById('ai-queue-close').addEventListener('click', () => {
+  document.getElementById('modal-ai-queue').style.display = 'none';
+});
+document.getElementById('modal-ai-queue').addEventListener('click', e => {
+  if (e.target === e.currentTarget) document.getElementById('modal-ai-queue').style.display = 'none';
+});
+
+// Poll every 5s
+setInterval(refreshAiQueue, 5000);
+refreshAiQueue();
 
 // ── AI Settings Modal ─────────────────────────────────────────────────────────
 async function openAiSettings() {

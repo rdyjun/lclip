@@ -19,6 +19,26 @@ function saveAiConfig(cfg) {
   fs.writeJsonSync(AI_CONFIG_FILE, cfg, { spaces: 2 });
 }
 
+const QUEUE_FILE = path.join(config.DATA_DIR, 'ai-queue.json');
+const jobs = new Map(); // id -> job
+
+function loadQueue() {
+  try {
+    const data = fs.readJsonSync(QUEUE_FILE);
+    if (Array.isArray(data)) {
+      data.forEach(j => {
+        if (j.status === 'done' || j.status === 'error') jobs.set(j.id, j);
+      });
+    }
+  } catch (_) {}
+}
+
+function saveQueue() {
+  fs.writeJsonSync(QUEUE_FILE, [...jobs.values()], { spaces: 2 });
+}
+
+loadQueue();
+
 if (!process.env.FFMPEG_PATH) {
   try { ffmpegLib.setFfmpegPath(require('ffmpeg-static')); } catch (_) {}
 }
@@ -82,44 +102,34 @@ async function uploadToGemini(filePath, displayName, apiKey, onProgress) {
   return { file, fileManager };
 }
 
-// GET /api/ai/config
-router.get('/config', (req, res) => res.json(loadAiConfig()));
-
-// POST /api/ai/config
-router.post('/config', (req, res) => {
-  const cfg = {
-    referenceVideos: Array.isArray(req.body.referenceVideos) ? req.body.referenceVideos : [],
-    concept: String(req.body.concept || ''),
-  };
-  saveAiConfig(cfg);
-  res.json(cfg);
-});
-
-// GET /api/ai/analyze?videoId=xxx  — SSE endpoint
-router.get('/analyze', async (req, res) => {
-  const { videoId } = req.query;
-  const video = Videos.findById(videoId);
-  if (!video) return res.status(404).json({ error: 'Video not found' });
-
-  res.setHeader('Content-Type',  'text/event-stream');
-  res.setHeader('Cache-Control', 'no-cache');
-  res.setHeader('Connection',    'keep-alive');
-  res.flushHeaders();
-
-  const send = (event, data) =>
-    res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+async function processJob(job) {
+  const video = Videos.findById(job.videoId);
+  if (!video) {
+    job.status = 'error';
+    job.error = 'Video not found';
+    saveQueue();
+    return;
+  }
 
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
-    send('error', { message: 'GEMINI_API_KEY가 설정되지 않았습니다. .env 파일을 확인하세요.' });
-    return res.end();
+    job.status = 'error';
+    job.error = 'GEMINI_API_KEY가 설정되지 않았습니다. .env 파일을 확인하세요.';
+    saveQueue();
+    return;
   }
 
   const originalPath = getFilePath(video);
   if (!fs.existsSync(originalPath)) {
-    send('error', { message: '영상 파일을 찾을 수 없습니다.' });
-    return res.end();
+    job.status = 'error';
+    job.error = '영상 파일을 찾을 수 없습니다.';
+    saveQueue();
+    return;
   }
+
+  job.status = 'running';
+  job.progress = { percent: 5, message: '분석 준비 중...' };
+  saveQueue();
 
   let uploadPath = originalPath;
   let tmpDir = null;
@@ -130,27 +140,30 @@ router.get('/analyze', async (req, res) => {
     // Compress if file exceeds Gemini's 2 GB limit
     const stat = fs.statSync(originalPath);
     if (stat.size > MAX_UPLOAD_BYTES) {
-      send('progress', {
+      job.progress = {
         message: `파일 크기(${(stat.size / 1e9).toFixed(1)}GB)가 커서 720p로 압축 중...`,
         percent: 10,
-      });
+      };
+      saveQueue();
       tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ai-compress-'));
       uploadPath = path.join(tmpDir, 'compressed.mp4');
       await compressVideo(originalPath, uploadPath);
     }
 
-    send('progress', { message: 'Gemini에 영상 업로드 중...', percent: 20 });
+    job.progress = { message: 'Gemini에 영상 업로드 중...', percent: 20 };
+    saveQueue();
 
     const result = await uploadToGemini(
       uploadPath,
       video.name,
       apiKey,
-      msg => send('progress', { message: msg, percent: 40 }),
+      msg => { job.progress = { message: msg, percent: 40 }; },
     );
     geminiFile = result.file;
     fileManager = result.fileManager;
 
-    send('progress', { message: 'Gemini가 영상을 분석 중입니다... (30초~3분 소요)', percent: 60 });
+    job.progress = { message: 'Gemini가 영상을 분석 중입니다... (30초~3분 소요)', percent: 60 };
+    saveQueue();
 
     const genAI = new GoogleGenerativeAI(apiKey);
     const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
@@ -158,7 +171,7 @@ router.get('/analyze', async (req, res) => {
     const aiConfig = loadAiConfig();
     const response = await model.generateContent(buildContent(geminiFile, video.duration, aiConfig));
 
-    send('progress', { message: '결과 처리 중...', percent: 90 });
+    job.progress = { message: '결과 처리 중...', percent: 90 };
 
     const text = response.response.text();
     const clean = text.replace(/```[a-z]*\n?/gi, '').trim();
@@ -218,18 +231,82 @@ router.get('/analyze', async (req, res) => {
       .filter(Boolean)
       .sort((a, b) => b.virality - a.virality);
 
-    send('result', { shorts, music });
+    job.status = 'done';
+    job.result = { shorts, music };
+    job.progress = { percent: 100, message: '분석 완료' };
   } catch (err) {
     console.error('[AI analyze]', err.message);
-    send('error', { message: err.message });
+    job.status = 'error';
+    job.error = err.message;
   } finally {
     // Clean up: delete uploaded file from Gemini servers
     if (geminiFile && fileManager) {
       fileManager.deleteFile(geminiFile.name).catch(() => {});
     }
     if (tmpDir) fs.removeSync(tmpDir);
-    res.end();
+    saveQueue();
   }
+}
+
+// GET /api/ai/config
+router.get('/config', (req, res) => res.json(loadAiConfig()));
+
+// POST /api/ai/config
+router.post('/config', (req, res) => {
+  const cfg = {
+    referenceVideos: Array.isArray(req.body.referenceVideos) ? req.body.referenceVideos : [],
+    concept: String(req.body.concept || ''),
+  };
+  saveAiConfig(cfg);
+  res.json(cfg);
+});
+
+// POST /api/ai/analyze — enqueue a job, return { jobId }
+router.post('/analyze', (req, res) => {
+  const { videoId } = req.body;
+  const video = Videos.findById(videoId);
+  if (!video) return res.status(404).json({ error: 'Video not found' });
+
+  // Check for existing queued/running job for this video
+  const existing = [...jobs.values()].find(
+    j => j.videoId === videoId && (j.status === 'queued' || j.status === 'running')
+  );
+  if (existing) return res.json({ jobId: existing.id, existing: true });
+
+  const id = Date.now().toString(36) + Math.random().toString(36).slice(2);
+  const job = {
+    id,
+    videoId,
+    videoName: video.name,
+    status: 'queued',
+    progress: { percent: 0, message: '대기 중...' },
+    result: null,
+    error: null,
+    createdAt: Date.now(),
+  };
+  jobs.set(id, job);
+  saveQueue();
+
+  // Run in background (no await)
+  processJob(job).catch(err => console.error('[processJob]', err));
+
+  res.json({ jobId: id });
+});
+
+// GET /api/ai/jobs — return all jobs sorted newest first
+router.get('/jobs', (req, res) => {
+  const list = [...jobs.values()].sort((a, b) => b.createdAt - a.createdAt);
+  res.json(list);
+});
+
+// DELETE /api/ai/jobs/:id — remove a job (reject)
+router.delete('/jobs/:id', (req, res) => {
+  const job = jobs.get(req.params.id);
+  if (!job) return res.status(404).json({ error: 'Job not found' });
+  if (job.status === 'running') return res.status(400).json({ error: 'Cannot delete a running job' });
+  jobs.delete(req.params.id);
+  saveQueue();
+  res.json({ ok: true });
 });
 
 // GET /api/ai/music-search?q=xxx  — YouTube search proxy (no API key needed)
