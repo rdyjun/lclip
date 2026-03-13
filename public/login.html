@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>로그인 - ShortCut Studio</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #1a1a2e;
+      color: #e0e0e0;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+    }
+    .login-box {
+      background: #16213e;
+      border: 1px solid #0f3460;
+      border-radius: 12px;
+      padding: 48px 40px;
+      width: 100%;
+      max-width: 360px;
+      text-align: center;
+    }
+    h1 {
+      font-size: 22px;
+      font-weight: 700;
+      margin-bottom: 8px;
+      color: #e94560;
+    }
+    p.subtitle {
+      font-size: 13px;
+      color: #888;
+      margin-bottom: 32px;
+    }
+    input[type="password"] {
+      width: 100%;
+      padding: 12px 16px;
+      background: #0f3460;
+      border: 1px solid #1a4a8a;
+      border-radius: 8px;
+      color: #e0e0e0;
+      font-size: 16px;
+      outline: none;
+      margin-bottom: 16px;
+      transition: border-color 0.2s;
+    }
+    input[type="password"]:focus {
+      border-color: #e94560;
+    }
+    button {
+      width: 100%;
+      padding: 12px;
+      background: #e94560;
+      border: none;
+      border-radius: 8px;
+      color: #fff;
+      font-size: 15px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+    button:hover { background: #c73652; }
+    .error {
+      margin-top: 16px;
+      color: #e94560;
+      font-size: 13px;
+      min-height: 18px;
+    }
+  </style>
+</head>
+<body>
+  <div class="login-box">
+    <h1>ShortCut Studio</h1>
+    <p class="subtitle">비밀번호를 입력하세요</p>
+    <input type="password" id="password" placeholder="Password" autofocus>
+    <button id="btn-login">로그인</button>
+    <div class="error" id="error"></div>
+  </div>
+  <script>
+    async function login() {
+      const password = document.getElementById('password').value;
+      const errEl = document.getElementById('error');
+      errEl.textContent = '';
+      try {
+        const r = await fetch('/api/auth/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ password })
+        });
+        if (r.ok) {
+          location.href = '/';
+        } else {
+          const data = await r.json();
+          errEl.textContent = data.error || '로그인 실패';
+        }
+      } catch (e) {
+        errEl.textContent = '서버 오류가 발생했습니다.';
+      }
+    }
+    document.getElementById('btn-login').addEventListener('click', login);
+    document.getElementById('password').addEventListener('keydown', e => {
+      if (e.key === 'Enter') login();
+    });
+  </script>
+</body>
+</html>

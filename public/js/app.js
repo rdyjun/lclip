@@ -1,22 +1,31 @@
 // Main page application logic
+function handleUnauthorized(r) {
+  if (r.status === 401) { location.href = '/login'; return true; }
+  return false;
+}
+
 const API = {
   async get(url) {
     const r = await fetch(url);
+    if (handleUnauthorized(r)) return;
     if (!r.ok) throw new Error(await r.text());
     return r.json();
   },
   async post(url, data) {
     const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) });
+    if (handleUnauthorized(r)) return;
     if (!r.ok) throw new Error(await r.text());
     return r.json();
   },
   async patch(url, data) {
     const r = await fetch(url, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) });
+    if (handleUnauthorized(r)) return;
     if (!r.ok) throw new Error(await r.text());
     return r.json();
   },
   async delete(url) {
     const r = await fetch(url, { method: 'DELETE' });
+    if (handleUnauthorized(r)) return;
     if (!r.ok) throw new Error(await r.text());
     return r.json();
   }

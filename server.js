@@ -2,6 +2,7 @@
 require('dotenv').config();
 
 const express = require('express');
+const session = require('express-session');
 const cors = require('cors');
 const path = require('path');
 const fs = require('fs-extra');
@@ -25,6 +26,21 @@ app.use(cors());
 app.use(express.json({ limit: '100mb' }));
 app.use(express.urlencoded({ extended: true, limit: '100mb' }));
 
+// Session middleware
+app.use(session({
+  secret: process.env.SESSION_SECRET || 'fallback_secret',
+  resave: false,
+  saveUninitialized: false,
+  cookie: { httpOnly: true, maxAge: 7 * 24 * 60 * 60 * 1000 }
+}));
+
+// Auth middleware
+function requireAuth(req, res, next) {
+  if (req.session.authenticated) return next();
+  if (req.path.startsWith('/api/')) return res.status(401).json({ error: 'Unauthorized' });
+  return res.redirect('/login');
+}
+
 // Disable timeout for large file uploads/exports
 app.use((req, res, next) => {
   req.setTimeout(0);
@@ -32,6 +48,24 @@ app.use((req, res, next) => {
   next();
 });
 
+// Login page (public) — before express.static so login.html is accessible unauthenticated
+app.get('/login', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'login.html'));
+});
+
+// Home page (protected) — before express.static so static middleware doesn't auto-serve index.html
+app.get('/', requireAuth, (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'index.html'));
+});
+
+// Editor page (protected) — before express.static
+app.get('/editor/:projectId', requireAuth, (req, res) => {
+  res.set('Cross-Origin-Opener-Policy',   'same-origin');
+  res.set('Cross-Origin-Embedder-Policy', 'credentialless');
+  res.sendFile(path.join(__dirname, 'public', 'editor.html'));
+});
+
+// Static files (CSS/JS/images) — no auth required so login page can load assets
 app.use(express.static(path.join(__dirname, 'public')));
 app.use('/uploads', express.static(config.UPLOADS_DIR));
 app.use('/exports', express.static(config.EXPORTS_DIR));
@@ -50,7 +84,11 @@ app.get('/api/defaults.js', (req, res) => {
   res.send(`window.APP_DEFAULTS=${JSON.stringify(defaults)};`);
 });
 
-// Routes
+// Auth routes (public)
+const authRouter = require('./src/routes/auth');
+app.use('/api/auth', authRouter);
+
+// API Routes (protected)
 const videosRouter   = require('./src/routes/videos');
 const projectsRouter = require('./src/routes/projects');
 const exportRouter   = require('./src/routes/export');
@@ -59,23 +97,13 @@ const fontsRouter    = require('./src/routes/fonts');
 const aiRouter       = require('./src/routes/ai');
 const audioRouter    = require('./src/routes/audio');
 
-app.use('/api/videos',   videosRouter);
-app.use('/api/projects', projectsRouter);
-app.use('/api/export',   exportRouter);
-app.use('/api/rofl',     roflRouter);
-app.use('/api/fonts',    fontsRouter);
-app.use('/api/ai',       aiRouter);
-app.use('/api/audio',    audioRouter);
-
-// Serve editor page with COOP/COEP headers required by FFmpeg.wasm
-// (SharedArrayBuffer is only available in cross-origin isolated contexts).
-// credentialless COEP allows same-origin resources + cross-origin resources
-// that don't send credentials (e.g. Google Fonts CDN).
-app.get('/editor/:projectId', (req, res) => {
-  res.set('Cross-Origin-Opener-Policy',   'same-origin');
-  res.set('Cross-Origin-Embedder-Policy', 'credentialless');
-  res.sendFile(path.join(__dirname, 'public', 'editor.html'));
-});
+app.use('/api/videos',   requireAuth, videosRouter);
+app.use('/api/projects', requireAuth, projectsRouter);
+app.use('/api/export',   requireAuth, exportRouter);
+app.use('/api/rofl',     requireAuth, roflRouter);
+app.use('/api/fonts',    requireAuth, fontsRouter);
+app.use('/api/ai',       requireAuth, aiRouter);
+app.use('/api/audio',    requireAuth, audioRouter);
 
 app.listen(PORT, () => {
   console.log(`Video Editor Server running at http://localhost:${PORT}`);

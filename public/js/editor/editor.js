@@ -13,7 +13,9 @@
 
   // Load project
   try {
-    const project = await fetch(`/api/projects/${projectId}`).then(r => r.json());
+    const resp = await fetch(`/api/projects/${projectId}`);
+    if (resp.status === 401) { location.href = '/login'; return; }
+    const project = await resp.json();
     document.getElementById('project-title').textContent = project.name;
     document.title = `${project.name} - ShortCut Studio`;
     EditorState.setProject(project);
