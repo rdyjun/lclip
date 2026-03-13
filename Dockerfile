@@ -2,7 +2,10 @@ FROM node:20-alpine
 
 # System FFmpeg + fontconfig + Korean fonts for subtitle drawtext
 # Same fonts offered in the editor UI — TTF versions downloaded from Google Fonts
-RUN apk add --no-cache ffmpeg fontconfig curl && \
+RUN apk add --no-cache \
+    ffmpeg fontconfig curl \
+    python3 make g++ \
+    cairo-dev pango-dev libjpeg-turbo-dev giflib-dev pixman-dev && \
     F=/usr/share/fonts/korean && mkdir -p $F && \
     B="https://github.com/google/fonts/raw/main/ofl" && \
     # Required fallback — build fails if these are unavailable
