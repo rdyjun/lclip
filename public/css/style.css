@@ -126,6 +126,62 @@ body {
 .btn-ai:hover { background: linear-gradient(135deg, #5a4bd1, #8a7ff0); transform: translateY(-1px); }
 .btn-sm { padding: 6px 12px; font-size: 13px; }
 
+/* ── AI FAB ─────────────────────────────────────────────────────────────────── */
+#ai-fab-container {
+  position: fixed;
+  bottom: 32px;
+  right: 32px;
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 12px;
+}
+
+#btn-ai-queue {
+  border-radius: 24px;
+  padding: 10px 20px;
+  font-size: 14px;
+  font-weight: 600;
+  box-shadow: 0 4px 16px rgba(108,92,231,0.4);
+  transition: transform 0.15s, box-shadow 0.15s;
+}
+#btn-ai-queue:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 20px rgba(108,92,231,0.5);
+}
+
+.ai-fab-popup {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  width: 380px;
+  max-width: calc(100vw - 64px);
+  box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+  overflow: hidden;
+  transform-origin: bottom right;
+  animation: fabPopupIn 0.18s ease;
+}
+
+@keyframes fabPopupIn {
+  from { opacity: 0; transform: scale(0.92) translateY(8px); }
+  to   { opacity: 1; transform: scale(1) translateY(0); }
+}
+
+.ai-fab-popup-header {
+  padding: 14px 16px;
+  font-size: 14px;
+  font-weight: 700;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-primary);
+}
+
+.ai-fab-popup-body {
+  padding: 12px 16px;
+  max-height: 400px;
+  overflow-y: auto;
+}
+
 /* ── Add Video Tabs ─────────────────────────────────────────────────────────── */
 .add-video-tabs {
   display: flex;

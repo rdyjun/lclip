@@ -800,7 +800,7 @@ async function refreshAiQueue() {
   try {
     _queueJobs = await API.get('/api/ai/jobs');
     updateAiQueueBadge();
-    if (document.getElementById('modal-ai-queue').style.display !== 'none') {
+    if (document.getElementById('ai-fab-popup').style.display !== 'none') {
       renderAiQueue();
     }
   } catch (_) {}
@@ -812,10 +812,11 @@ function updateAiQueueBadge() {
   const running = _queueJobs.filter(j => j.status === 'running' || j.status === 'queued').length;
   const total = _queueJobs.length;
   if (total === 0) {
-    btn.style.display = 'none';
+    badge.style.display = 'none';
+    btn.style.background = '';
     return;
   }
-  btn.style.display = '';
+  badge.style.display = '';
   badge.textContent = total;
   const hasError = _queueJobs.some(j => j.status === 'error');
   btn.style.background = running ? '#2980b9' : hasError ? '#c0392b' : '#27ae60';
@@ -896,7 +897,7 @@ async function approveAiJob(jobId) {
     await API.delete(`/api/ai/jobs/${jobId}`);
     await refreshAiQueue();
 
-    document.getElementById('modal-ai-queue').style.display = 'none';
+    document.getElementById('ai-fab-popup').style.display = 'none';
     if (projects.length === 1) {
       window.location.href = `/editor/${projects[0].id}`;
     } else {
@@ -918,15 +919,21 @@ async function rejectAiJob(jobId) {
   }
 }
 
-document.getElementById('btn-ai-queue').addEventListener('click', () => {
-  renderAiQueue();
-  document.getElementById('modal-ai-queue').style.display = 'flex';
+document.getElementById('btn-ai-queue').addEventListener('click', (e) => {
+  e.stopPropagation();
+  const popup = document.getElementById('ai-fab-popup');
+  if (popup.style.display !== 'none') {
+    popup.style.display = 'none';
+  } else {
+    renderAiQueue();
+    popup.style.display = '';
+  }
 });
-document.getElementById('ai-queue-close').addEventListener('click', () => {
-  document.getElementById('modal-ai-queue').style.display = 'none';
-});
-document.getElementById('modal-ai-queue').addEventListener('click', e => {
-  if (e.target === e.currentTarget) document.getElementById('modal-ai-queue').style.display = 'none';
+document.addEventListener('click', (e) => {
+  const container = document.getElementById('ai-fab-container');
+  if (container && !container.contains(e.target)) {
+    document.getElementById('ai-fab-popup').style.display = 'none';
+  }
 });
 
 // Poll every 5s
