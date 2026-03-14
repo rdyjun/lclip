@@ -31,6 +31,15 @@ const API = {
   }
 };
 
+function showToast(msg, duration = 3000) {
+  const container = document.getElementById('toast-container');
+  const el = document.createElement('div');
+  el.className = 'toast';
+  el.textContent = msg;
+  container.appendChild(el);
+  setTimeout(() => el.remove(), duration);
+}
+
 function formatDuration(seconds) {
   if (!seconds) return '0:00';
   const m = Math.floor(seconds / 60);
@@ -97,6 +106,7 @@ document.querySelectorAll('.nav-link').forEach(link => {
     link.classList.add('active');
     document.getElementById(`page-${page}`).classList.add('active');
     if (page === 'projects') loadProjects();
+    if (page === 'ai-results') loadAiResults();
   });
 });
 
@@ -654,6 +664,7 @@ async function startAiAnalysis() {
   setAiProgress(10, '분석 요청 중...');
   try {
     const { jobId, existing } = await API.post('/api/ai/analyze', { videoId: _aiVideo.id });
+    showToast(existing ? '이미 분석 중인 영상입니다.' : '✨ AI 분석 요청이 등록되었습니다.');
     setAiProgress(100, existing ? '이미 분석 중인 영상입니다.' : '분석이 시작되었습니다. 완료되면 상단 버튼에서 확인할 수 있습니다.');
     document.getElementById('ai-progress-bar').style.display = 'none';
     document.getElementById('ai-modal-footer').style.display = 'none';
@@ -977,6 +988,88 @@ document.getElementById('ai-settings-save').addEventListener('click', async () =
     btn.textContent = '저장';
   }
 });
+
+// ── AI Results Page ───────────────────────────────────────────────────────────
+async function loadAiResults() {
+  const list = document.getElementById('ai-results-list');
+  if (!list) return;
+  list.innerHTML = '<p style="color:var(--text-muted);text-align:center;padding:40px">로딩 중...</p>';
+  try {
+    const res = await fetch('/api/ai/jobs');
+    const jobs = await res.json();
+    if (!jobs.length) {
+      list.innerHTML = '<p style="color:var(--text-muted);text-align:center;padding:40px">분석 이력이 없습니다.</p>';
+      return;
+    }
+    list.innerHTML = '';
+    jobs.slice().reverse().forEach(job => {
+      list.appendChild(renderAiResultItem(job));
+    });
+  } catch (e) {
+    list.innerHTML = `<p style="color:var(--error);text-align:center;padding:40px">오류: ${e.message}</p>`;
+  }
+}
+
+function renderAiResultItem(job) {
+  const statusLabel = { queued: '대기', running: '분석중', done: '완료', error: '오류' };
+  const statusColor = { queued: 'var(--text-muted)', running: 'var(--accent)', done: '#4caf50', error: 'var(--error)' };
+  const date = new Date(job.createdAt).toLocaleString('ko-KR');
+
+  const el = document.createElement('div');
+  el.className = 'ai-result-item';
+
+  const badgeStyle = `background:${statusColor[job.status] || 'var(--text-muted)'};color:#fff;padding:2px 8px;border-radius:4px;font-size:11px;`;
+
+  let detailHtml = '';
+  if (job.status === 'done' && job.result?.shorts?.length) {
+    const rows = job.result.shorts.map(s => {
+      const dur = s.endTime != null && s.startTime != null ? `${Math.round(s.endTime - s.startTime)}s` : '';
+      return `<div class="ai-short-row">
+        <span style="font-weight:600">${s.title || '(제목 없음)'}</span>
+        ${s.type ? `<span style="color:var(--text-muted)">[${s.type}]</span>` : ''}
+        ${dur ? `<span style="color:var(--text-muted)">${dur}</span>` : ''}
+        ${s.viralityScore != null ? `<span style="color:var(--accent)">★${s.viralityScore}</span>` : ''}
+      </div>`;
+    }).join('');
+    detailHtml = `<div class="ai-result-shorts">${rows}</div>`;
+  } else if (job.status === 'error') {
+    detailHtml = `<div style="margin-top:8px;color:var(--error);font-size:13px">오류: ${job.error || '알 수 없는 오류'}</div>`;
+  } else if (job.status === 'running' || job.status === 'queued') {
+    const pct = job.progress?.percent ?? 0;
+    const msg = job.progress?.message ?? '';
+    detailHtml = `<div style="margin-top:10px">
+      <div style="background:var(--bg-primary);border-radius:4px;height:6px;overflow:hidden">
+        <div style="background:var(--accent);height:100%;width:${pct}%;transition:width 0.3s"></div>
+      </div>
+      <div style="font-size:12px;color:var(--text-muted);margin-top:4px">${msg} (${pct}%)</div>
+    </div>`;
+  }
+
+  const logsHtml = (job.logs || []).map(l => {
+    const t = new Date(l.time).toLocaleTimeString('ko-KR');
+    return `<div class="ai-log-line"><span class="ai-log-time">${t}</span>${l.message}</div>`;
+  }).join('');
+
+  el.innerHTML = `
+    <div class="ai-result-header">
+      <span class="ai-result-title">${job.videoName || job.videoId}</span>
+      <span style="${badgeStyle}">${statusLabel[job.status] || job.status}</span>
+      <button class="btn btn-secondary btn-sm btn-toggle-logs">로그 보기</button>
+    </div>
+    <div class="ai-result-meta">${date}</div>
+    ${detailHtml}
+    <div class="ai-result-logs">${logsHtml || '<span style="color:var(--text-muted)">로그 없음</span>'}</div>
+  `;
+
+  el.querySelector('.btn-toggle-logs').addEventListener('click', () => {
+    el.querySelector('.ai-result-logs').classList.toggle('open');
+  });
+
+  return el;
+}
+
+document.getElementById('btn-ai-results-refresh')
+  ?.addEventListener('click', loadAiResults);
 
 // ── Init ──────────────────────────────────────────────────────────────────────
 loadVideos();

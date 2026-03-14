@@ -102,6 +102,10 @@ async function uploadToGemini(filePath, displayName, apiKey, onProgress) {
   return { file, fileManager };
 }
 
+function appendLog(job, message) {
+  job.logs.push({ time: Date.now(), message });
+}
+
 async function processJob(job) {
   const video = Videos.findById(job.videoId);
   if (!video) {
@@ -129,6 +133,7 @@ async function processJob(job) {
 
   job.status = 'running';
   job.progress = { percent: 5, message: '분석 준비 중...' };
+  appendLog(job, '분석 준비 시작');
   saveQueue();
 
   let uploadPath = originalPath;
@@ -140,6 +145,7 @@ async function processJob(job) {
     // Compress if file exceeds Gemini's 2 GB limit
     const stat = fs.statSync(originalPath);
     if (stat.size > MAX_UPLOAD_BYTES) {
+      appendLog(job, '파일 압축 시작 ...');
       job.progress = {
         message: `파일 크기(${(stat.size / 1e9).toFixed(1)}GB)가 커서 720p로 압축 중...`,
         percent: 10,
@@ -150,6 +156,7 @@ async function processJob(job) {
       await compressVideo(originalPath, uploadPath);
     }
 
+    appendLog(job, 'Gemini 업로드 시작');
     job.progress = { message: 'Gemini에 영상 업로드 중...', percent: 20 };
     saveQueue();
 
@@ -168,6 +175,7 @@ async function processJob(job) {
     const genAI = new GoogleGenerativeAI(apiKey);
     const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
 
+    appendLog(job, 'Gemini 영상 분석 요청');
     const aiConfig = loadAiConfig();
     const response = await model.generateContent(buildContent(geminiFile, video.duration, aiConfig));
 
@@ -231,11 +239,13 @@ async function processJob(job) {
       .filter(Boolean)
       .sort((a, b) => b.virality - a.virality);
 
+    appendLog(job, '결과 파싱 완료');
     job.status = 'done';
     job.result = { shorts, music };
     job.progress = { percent: 100, message: '분석 완료' };
   } catch (err) {
     console.error('[AI analyze]', err.message);
+    appendLog(job, `오류: ${err.message}`);
     job.status = 'error';
     job.error = err.message;
   } finally {
@@ -282,6 +292,7 @@ router.post('/analyze', (req, res) => {
     progress: { percent: 0, message: '대기 중...' },
     result: null,
     error: null,
+    logs: [],
     createdAt: Date.now(),
   };
   jobs.set(id, job);
