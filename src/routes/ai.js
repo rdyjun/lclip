@@ -9,6 +9,10 @@ const { GoogleAIFileManager, FileState } = require('@google/generative-ai/server
 const { Videos } = require('../models/db');
 const config = require('../config');
 const { buildContent } = require('../prompts/highlights');
+const { EventEmitter } = require('events');
+
+const aiEmitter = new EventEmitter();
+aiEmitter.setMaxListeners(50);
 
 const AI_CONFIG_FILE = path.join(config.DATA_DIR, 'ai-config.json');
 function loadAiConfig() {
@@ -35,6 +39,11 @@ function loadQueue() {
 
 function saveQueue() {
   fs.writeJsonSync(QUEUE_FILE, [...jobs.values()], { spaces: 2 });
+}
+
+function notifyClients(job) {
+  saveQueue();
+  aiEmitter.emit('job_update', job);
 }
 
 loadQueue();
@@ -111,7 +120,7 @@ async function processJob(job) {
   if (!video) {
     job.status = 'error';
     job.error = 'Video not found';
-    saveQueue();
+    notifyClients(job);
     return;
   }
 
@@ -119,7 +128,7 @@ async function processJob(job) {
   if (!apiKey) {
     job.status = 'error';
     job.error = 'GEMINI_API_KEY가 설정되지 않았습니다. .env 파일을 확인하세요.';
-    saveQueue();
+    notifyClients(job);
     return;
   }
 
@@ -127,14 +136,14 @@ async function processJob(job) {
   if (!fs.existsSync(originalPath)) {
     job.status = 'error';
     job.error = '영상 파일을 찾을 수 없습니다.';
-    saveQueue();
+    notifyClients(job);
     return;
   }
 
   job.status = 'running';
   job.progress = { percent: 5, message: '분석 준비 중...' };
   appendLog(job, '분석 준비 시작');
-  saveQueue();
+  notifyClients(job);
 
   let uploadPath = originalPath;
   let tmpDir = null;
@@ -150,7 +159,7 @@ async function processJob(job) {
         message: `파일 크기(${(stat.size / 1e9).toFixed(1)}GB)가 커서 720p로 압축 중...`,
         percent: 10,
       };
-      saveQueue();
+      notifyClients(job);
       tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ai-compress-'));
       uploadPath = path.join(tmpDir, 'compressed.mp4');
       await compressVideo(originalPath, uploadPath);
@@ -158,19 +167,19 @@ async function processJob(job) {
 
     appendLog(job, 'Gemini 업로드 시작');
     job.progress = { message: 'Gemini에 영상 업로드 중...', percent: 20 };
-    saveQueue();
+    notifyClients(job);
 
     const result = await uploadToGemini(
       uploadPath,
       video.name,
       apiKey,
-      msg => { job.progress = { message: msg, percent: 40 }; },
+      msg => { job.progress = { message: msg, percent: 40 }; notifyClients(job); },
     );
     geminiFile = result.file;
     fileManager = result.fileManager;
 
     job.progress = { message: 'Gemini가 영상을 분석 중입니다... (30초~3분 소요)', percent: 60 };
-    saveQueue();
+    notifyClients(job);
 
     const genAI = new GoogleGenerativeAI(apiKey);
     const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
@@ -180,6 +189,7 @@ async function processJob(job) {
     const response = await model.generateContent(buildContent(geminiFile, video.duration, aiConfig));
 
     job.progress = { message: '결과 처리 중...', percent: 90 };
+    notifyClients(job);
 
     const text = response.response.text();
     const clean = text.replace(/```[a-z]*\n?/gi, '').trim();
@@ -254,7 +264,7 @@ async function processJob(job) {
       fileManager.deleteFile(geminiFile.name).catch(() => {});
     }
     if (tmpDir) fs.removeSync(tmpDir);
-    saveQueue();
+    notifyClients(job);
   }
 }
 
@@ -308,6 +318,27 @@ router.post('/analyze', (req, res) => {
 router.get('/jobs', (req, res) => {
   const list = [...jobs.values()].sort((a, b) => b.createdAt - a.createdAt);
   res.json(list);
+});
+
+// GET /api/ai/stream — SSE endpoint for real-time job updates
+router.get('/stream', (req, res) => {
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.flushHeaders();
+
+  const allJobs = [...jobs.values()].sort((a, b) => b.createdAt - a.createdAt);
+  res.write(`data: ${JSON.stringify({ type: 'init', jobs: allJobs })}\n\n`);
+
+  const onUpdate = (job) => {
+    res.write(`data: ${JSON.stringify({ type: 'update', job })}\n\n`);
+  };
+
+  aiEmitter.on('job_update', onUpdate);
+
+  req.on('close', () => {
+    aiEmitter.off('job_update', onUpdate);
+  });
 });
 
 // DELETE /api/ai/jobs/:id — remove a job (reject)

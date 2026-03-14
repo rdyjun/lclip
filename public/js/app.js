@@ -107,6 +107,7 @@ document.querySelectorAll('.nav-link').forEach(link => {
     document.getElementById(`page-${page}`).classList.add('active');
     if (page === 'projects') loadProjects();
     if (page === 'ai-results') loadAiResults();
+    else disconnectAiStream();
   });
 });
 
@@ -990,24 +991,50 @@ document.getElementById('ai-settings-save').addEventListener('click', async () =
 });
 
 // ── AI Results Page ───────────────────────────────────────────────────────────
-async function loadAiResults() {
+let _aiEventSource = null;
+
+function connectAiStream() {
+  if (_aiEventSource) return;
+  _aiEventSource = new EventSource('/api/ai/stream');
+  _aiEventSource.onmessage = (e) => {
+    const data = JSON.parse(e.data);
+    if (data.type === 'init') renderAiResultsList(data.jobs);
+    else if (data.type === 'update') updateAiResultItem(data.job);
+  };
+  _aiEventSource.onerror = () => {
+    // EventSource auto-reconnects on error
+  };
+}
+
+function disconnectAiStream() {
+  if (_aiEventSource) {
+    _aiEventSource.close();
+    _aiEventSource = null;
+  }
+}
+
+function loadAiResults() {
+  connectAiStream();
+}
+
+function renderAiResultsList(jobs) {
   const list = document.getElementById('ai-results-list');
   if (!list) return;
-  list.innerHTML = '<p style="color:var(--text-muted);text-align:center;padding:40px">로딩 중...</p>';
-  try {
-    const res = await fetch('/api/ai/jobs');
-    const jobs = await res.json();
-    if (!jobs.length) {
-      list.innerHTML = '<p style="color:var(--text-muted);text-align:center;padding:40px">분석 이력이 없습니다.</p>';
-      return;
-    }
-    list.innerHTML = '';
-    jobs.slice().reverse().forEach(job => {
-      list.appendChild(renderAiResultItem(job));
-    });
-  } catch (e) {
-    list.innerHTML = `<p style="color:var(--error);text-align:center;padding:40px">오류: ${e.message}</p>`;
+  if (!jobs.length) {
+    list.innerHTML = '<p style="color:var(--text-muted);text-align:center;padding:40px">분석 이력이 없습니다.</p>';
+    return;
   }
+  list.innerHTML = '';
+  jobs.forEach(job => list.appendChild(renderAiResultItem(job)));
+}
+
+function updateAiResultItem(job) {
+  const list = document.getElementById('ai-results-list');
+  if (!list) return;
+  const existing = list.querySelector(`[data-job-id="${job.id}"]`);
+  const newEl = renderAiResultItem(job);
+  if (existing) existing.replaceWith(newEl);
+  else list.prepend(newEl);
 }
 
 function renderAiResultItem(job) {
@@ -1017,18 +1044,19 @@ function renderAiResultItem(job) {
 
   const el = document.createElement('div');
   el.className = 'ai-result-item';
+  el.dataset.jobId = job.id;
 
   const badgeStyle = `background:${statusColor[job.status] || 'var(--text-muted)'};color:#fff;padding:2px 8px;border-radius:4px;font-size:11px;`;
 
   let detailHtml = '';
   if (job.status === 'done' && job.result?.shorts?.length) {
     const rows = job.result.shorts.map(s => {
-      const dur = s.endTime != null && s.startTime != null ? `${Math.round(s.endTime - s.startTime)}s` : '';
+      const dur = s.totalDuration != null ? `${Math.round(s.totalDuration)}s` : '';
       return `<div class="ai-short-row">
         <span style="font-weight:600">${s.title || '(제목 없음)'}</span>
         ${s.type ? `<span style="color:var(--text-muted)">[${s.type}]</span>` : ''}
         ${dur ? `<span style="color:var(--text-muted)">${dur}</span>` : ''}
-        ${s.viralityScore != null ? `<span style="color:var(--accent)">★${s.viralityScore}</span>` : ''}
+        ${s.virality != null ? `<span style="color:var(--accent)">★${s.virality}</span>` : ''}
       </div>`;
     }).join('');
     detailHtml = `<div class="ai-result-shorts">${rows}</div>`;
@@ -1069,7 +1097,10 @@ function renderAiResultItem(job) {
 }
 
 document.getElementById('btn-ai-results-refresh')
-  ?.addEventListener('click', loadAiResults);
+  ?.addEventListener('click', () => {
+    disconnectAiStream();
+    loadAiResults();
+  });
 
 // ── Init ──────────────────────────────────────────────────────────────────────
 loadVideos();
