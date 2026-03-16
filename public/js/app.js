@@ -510,58 +510,201 @@ function renderRoflModalBody(data) {
     ? `${Math.floor(data.matchLengthMs / 60000)}분 ${Math.floor((data.matchLengthMs % 60000) / 1000)}초`
     : '알 수 없음';
 
-  let html = `<p style="font-size:12px;color:var(--text-muted);margin-bottom:12px">게임 시간: ${matchDur}</p>
+  let participantOptions = '<option value="">-- 선택하세요 --</option>';
+  (data.participants || []).forEach((p, i) => {
+    participantOptions += `<option value="${i}">${p.championName} (${p.summonerName}) · K${p.kills}/D${p.deaths}/A${p.assists}</option>`;
+  });
+
+  const eventsText = (data.eventsFound && data.events.length > 0)
+    ? data.events.map(e => `${fmtTime(e.timeS)} ${e.type}`).join('\n')
+    : '';
+
+  body.innerHTML = `
+    <p style="font-size:12px;color:var(--text-muted);margin-bottom:12px">게임 시간: ${matchDur}</p>
     <label class="form-label">내가 플레이한 챔피언</label>
     <select class="form-input" id="rofl-champion-select">
-      <option value="">-- 선택하세요 --</option>`;
-  (data.participants || []).forEach((p, i) => {
-    html += `<option value="${i}">${p.championName} (${p.summonerName}) · K${p.kills}/D${p.deaths}/A${p.assists}</option>`;
-  });
-  html += `</select>
+      ${participantOptions}
+    </select>
     <div class="prop-row" style="margin-top:12px">
       <label class="prop-label" style="min-width:140px">영상 시작 오프셋 (초)</label>
       <input type="number" class="prop-input" id="rofl-video-offset" value="0" min="0" step="0.1"
         title="녹화 영상에서 게임이 시작되는 시점. 예: 로딩화면 포함 시 ~90 입력">
     </div>
-    <p style="font-size:11px;color:var(--text-muted);margin-bottom:12px">예: 로딩화면 포함 녹화 시 약 90초 입력</p>
-    ${data.eventsFound
-      ? `<p style="font-size:12px;color:#2ecc71;margin-bottom:4px">✅ ${data.events.length}개 전투 구간 자동 감지됨</p>
-         <p style="font-size:11px;color:var(--text-muted);margin-bottom:8px">※ 패킷 암호화로 킬 정확도 보장 불가 — 활동량(패킷 크기) 기반 추정값입니다. 필요시 직접 수정하세요.</p>`
-      : `<p style="font-size:12px;color:var(--text-muted);margin-bottom:4px">자동 이벤트 감지 불가 — 직접 입력하세요.</p>`}
-    <label class="form-label">이벤트 목록 (편집 가능)</label>
-    <p style="font-size:11px;color:var(--text-muted);margin-bottom:6px">형식: 분:초 또는 초 + 유형(kill/death/assist/activity), 줄 또는 쉼표 구분</p>
-    <textarea class="form-input" id="rofl-events-text" rows="6"
-      placeholder="5:30 kill&#10;8:15 death&#10;9:20 activity"></textarea>
-    <div class="prop-row" style="margin-top:10px">
-      <label class="prop-label" style="min-width:140px">이벤트 전 여유 (초)</label>
-      <input type="number" class="prop-input" id="rofl-before" value="10" min="0" max="60">
+    <p style="font-size:11px;color:var(--text-muted);margin-bottom:8px">예: 로딩화면 포함 녹화 시 약 90초 입력</p>
+    <div id="rofl-auto-section" style="display:none;margin-top:4px">
+      <label class="form-label" style="margin-bottom:6px">자동 분석 결과 <span style="font-size:11px;color:var(--text-muted);font-weight:400">(점수 순 — 체크된 클립만 생성)</span></label>
+      <div id="rofl-scored-clips"></div>
     </div>
-    <div class="prop-row">
-      <label class="prop-label" style="min-width:140px">이벤트 후 여유 (초)</label>
-      <input type="number" class="prop-input" id="rofl-after" value="10" min="0" max="60">
-    </div>
-    <div class="prop-row">
-      <label class="prop-label" style="min-width:140px">연속 이벤트 합치기 (초)</label>
-      <input type="number" class="prop-input" id="rofl-merge" value="20" min="0" max="120">
-    </div>`;
-
-  body.innerHTML = html;
-
-  if (data.eventsFound && data.events.length > 0) {
-    document.getElementById('rofl-events-text').value =
-      data.events.map(e => `${fmtTime(e.timeS)} ${e.type}`).join('\n');
-  }
+    <details style="margin-top:14px">
+      <summary style="cursor:pointer;font-size:12px;color:var(--text-muted);user-select:none">수동 입력 / 고급 설정</summary>
+      <div style="margin-top:10px">
+        ${data.eventsFound
+          ? `<p style="font-size:12px;color:#2ecc71;margin-bottom:4px">✅ ${data.events.length}개 전투 구간 감지됨</p>`
+          : `<p style="font-size:12px;color:var(--text-muted);margin-bottom:4px">자동 이벤트 감지 불가 — 직접 입력하세요.</p>`}
+        <label class="form-label">이벤트 목록</label>
+        <p style="font-size:11px;color:var(--text-muted);margin-bottom:6px">형식: 분:초 또는 초 + 유형(kill/death/assist/activity)</p>
+        <textarea class="form-input" id="rofl-events-text" rows="5"
+          placeholder="5:30 kill&#10;8:15 death&#10;9:20 activity">${eventsText}</textarea>
+        <div class="prop-row" style="margin-top:10px">
+          <label class="prop-label" style="min-width:140px">이벤트 전 여유 (초)</label>
+          <input type="number" class="prop-input" id="rofl-before" value="10" min="0" max="60">
+        </div>
+        <div class="prop-row">
+          <label class="prop-label" style="min-width:140px">이벤트 후 여유 (초)</label>
+          <input type="number" class="prop-input" id="rofl-after" value="10" min="0" max="60">
+        </div>
+        <div class="prop-row">
+          <label class="prop-label" style="min-width:140px">연속 이벤트 합치기 (초)</label>
+          <input type="number" class="prop-input" id="rofl-merge" value="20" min="0" max="120">
+        </div>
+      </div>
+    </details>`;
 
   const sel = document.getElementById('rofl-champion-select');
   sel.addEventListener('change', () => {
-    document.getElementById('btn-rofl-confirm').disabled = !sel.value;
+    if (sel.value !== '') runAutoScore();
+    else {
+      _scoredClips = [];
+      document.getElementById('rofl-auto-section').style.display = 'none';
+      document.getElementById('btn-rofl-confirm').disabled = true;
+    }
   });
+  document.getElementById('rofl-video-offset').addEventListener('change', () => {
+    if (sel.value !== '') runAutoScore();
+  });
+
   document.getElementById('btn-rofl-confirm').disabled = true;
 }
 
 function fmtTime(s) {
   const m = Math.floor(s / 60), sec = Math.floor(s % 60);
   return `${m}:${sec.toString().padStart(2, '0')}`;
+}
+
+// ── ROFL Auto-Score ──────────────────────────────────────────────────────────
+const SUBTITLE_POOLS = {
+  penta:    ['야 ㅋㅋㅋ', '미친', '다 줘', '이게 되네'],
+  quad:     ['ㅋㅋ 다 있네', '야', '전부 다야'],
+  triple:   ['어 다 있네', '이 정도야', 'ㄷㄷ'],
+  double:   ['쉽죠?', '어?', '당연하지'],
+  outplay:  ['아슬아슬', '이게 피냐', 'ㅋㅋ 살았다'],
+  activity: ['여기서', '자 가자', '집중'],
+  single:   ['별거 아님', '이 정도야'],
+};
+
+function pickRandom(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
+
+function getMultiKillLabel(n) {
+  return n >= 5 ? 'penta' : n === 4 ? 'quad' : n === 3 ? 'triple' : n === 2 ? 'double' : 'single';
+}
+
+function getTemplateSubtitles(label, duration) {
+  const pool = SUBTITLE_POOLS[label] || SUBTITLE_POOLS.single;
+  const count = duration > 25 ? 3 : 2;
+  const subs = [];
+  for (let i = 0; i < count; i++) {
+    subs.push({ offsetSec: Math.round(duration * (i + 1) / (count + 1)), text: pickRandom(pool), duration: 2 });
+  }
+  return subs;
+}
+
+function buildScoredClipsFromKills(killEvents, participantName, videoOffset, videoDuration, before, after) {
+  const WINDOW = 12;
+  let myKills = killEvents;
+  if (participantName) {
+    const base = participantName.toLowerCase().replace(/\s*#.*$/, '');
+    const filtered = killEvents.filter(e => {
+      const k = (e.killer || '').toLowerCase();
+      return k && (k === base || k.includes(base) || base.includes(k));
+    });
+    if (filtered.length > 0) myKills = filtered;
+  }
+  const sorted = [...myKills].sort((a, b) => a.timeS - b.timeS);
+  const clusters = [];
+  let cur = [sorted[0]];
+  for (let i = 1; i < sorted.length; i++) {
+    if (sorted[i].timeS - cur[cur.length - 1].timeS <= WINDOW) cur.push(sorted[i]);
+    else { clusters.push([...cur]); cur = [sorted[i]]; }
+  }
+  clusters.push(cur);
+  const SCORES = { penta: 100, quad: 80, triple: 60, double: 40, single: 20 };
+  return clusters.map(cluster => {
+    const label = getMultiKillLabel(cluster.length);
+    const srcStart = Math.max(0, cluster[0].timeS - before + videoOffset);
+    const srcEnd   = Math.min(videoDuration, cluster[cluster.length - 1].timeS + after + videoOffset);
+    return { srcStart, srcEnd, score: SCORES[label], label, killCount: cluster.length,
+             eventTypes: [label], subtitles: getTemplateSubtitles(label, srcEnd - srcStart) };
+  }).sort((a, b) => b.score - a.score);
+}
+
+function buildScoredClipsFromActivity(activityEvents, videoOffset, videoDuration, before, after) {
+  return activityEvents
+    .map(e => {
+      const srcStart = Math.max(0, e.timeS - before + videoOffset);
+      const srcEnd   = Math.min(videoDuration, e.timeS + after + videoOffset);
+      return { srcStart, srcEnd, score: Math.round(e.intensity * 10), label: 'activity',
+               killCount: 0, eventTypes: ['activity'],
+               subtitles: getTemplateSubtitles('activity', srcEnd - srcStart) };
+    })
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 8);
+}
+
+let _scoredClips = [];
+
+function runAutoScore() {
+  if (!roflData) return;
+  const selEl = document.getElementById('rofl-champion-select');
+  const participantIdx = selEl ? parseInt(selEl.value) : NaN;
+  const participant = !isNaN(participantIdx) ? roflData.participants?.[participantIdx] : null;
+  const offset = parseFloat(document.getElementById('rofl-video-offset')?.value || 0);
+  const before = 10, after = 10;
+  const videoDuration = selectedVideoForShort?.duration || 99999;
+
+  const killEvents     = (roflData.events || []).filter(e => e.type === 'kill');
+  const activityEvents = (roflData.events || []).filter(e => e.type === 'activity');
+
+  let clips = [];
+  if (killEvents.length > 0) {
+    clips = buildScoredClipsFromKills(killEvents, participant?.summonerName, offset, videoDuration, before, after);
+  } else if (activityEvents.length > 0) {
+    clips = buildScoredClipsFromActivity(activityEvents, offset, videoDuration, before, after);
+  }
+  _scoredClips = clips.map(c => ({ ...c, checked: true }));
+  renderScoredClipsList();
+  const autoSection = document.getElementById('rofl-auto-section');
+  if (autoSection) autoSection.style.display = _scoredClips.length ? '' : 'none';
+  document.getElementById('btn-rofl-confirm').disabled = !_scoredClips.some(c => c.checked);
+}
+
+function renderScoredClipsList() {
+  const container = document.getElementById('rofl-scored-clips');
+  if (!container) return;
+  if (!_scoredClips.length) {
+    container.innerHTML = '<p style="color:var(--text-muted);font-size:12px">감지된 클립 없음</p>';
+    return;
+  }
+  const LABEL_KO = { penta: '펜타킬', quad: '쿼드라킬', triple: '트리플킬', double: '더블킬', single: '단일킬', activity: '전투', outplay: '아웃플레이' };
+  const scoreColor = s => s >= 80 ? '#e74c3c' : s >= 60 ? '#e67e22' : s >= 40 ? '#f1c40f' : '#95a5a6';
+  container.innerHTML = _scoredClips.map((clip, i) => {
+    const label  = LABEL_KO[clip.label] || clip.label;
+    const time   = `${fmtTime(clip.srcStart)} ~ ${fmtTime(clip.srcEnd)}`;
+    const dur    = Math.round(clip.srcEnd - clip.srcStart);
+    const filled = Math.min(5, Math.ceil(clip.score / 20));
+    const stars  = '★'.repeat(filled) + '☆'.repeat(5 - filled);
+    return `<label style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--border);cursor:pointer;font-size:12px">
+      <input type="checkbox" data-ci="${i}" ${clip.checked ? 'checked' : ''} style="flex-shrink:0">
+      <span style="color:${scoreColor(clip.score)};min-width:60px">${stars}</span>
+      <span style="font-weight:600;min-width:56px">${label}</span>
+      <span style="color:var(--text-muted)">${time} (${dur}초)</span>
+    </label>`;
+  }).join('');
+  container.querySelectorAll('input[type=checkbox]').forEach(cb => {
+    cb.addEventListener('change', e => {
+      _scoredClips[parseInt(e.target.dataset.ci)].checked = e.target.checked;
+      document.getElementById('btn-rofl-confirm').disabled = !_scoredClips.some(c => c.checked);
+    });
+  });
 }
 
 function parseManualEvents(text) {
@@ -610,17 +753,21 @@ document.getElementById('btn-rofl-back').addEventListener('click', () => {
 });
 
 document.getElementById('btn-rofl-confirm').addEventListener('click', async () => {
-  const text    = document.getElementById('rofl-events-text')?.value || '';
-  const offset  = parseFloat(document.getElementById('rofl-video-offset')?.value || 0);
-  const before  = parseFloat(document.getElementById('rofl-before')?.value || 10);
-  const after   = parseFloat(document.getElementById('rofl-after')?.value || 10);
-  const merge   = parseFloat(document.getElementById('rofl-merge')?.value || 20);
-
-  const events = parseManualEvents(text);
-  if (!events.length) { alert('이벤트가 없습니다. 타임라인을 입력해 주세요.\n예) 5:30 kill'); return; }
-
-  const roflClips = generateRoflClips(events, offset, selectedVideoForShort?.duration || 99999, before, after, merge);
-  if (!roflClips.length) { alert('유효한 클립을 생성할 수 없습니다. 이벤트 시간과 오프셋을 확인해 주세요.'); return; }
+  let roflClips;
+  const autoClips = _scoredClips.filter(c => c.checked);
+  if (autoClips.length > 0) {
+    roflClips = autoClips;
+  } else {
+    const text   = document.getElementById('rofl-events-text')?.value || '';
+    const offset = parseFloat(document.getElementById('rofl-video-offset')?.value || 0);
+    const before = parseFloat(document.getElementById('rofl-before')?.value || 10);
+    const after  = parseFloat(document.getElementById('rofl-after')?.value || 10);
+    const merge  = parseFloat(document.getElementById('rofl-merge')?.value || 20);
+    const events = parseManualEvents(text);
+    if (!events.length) { alert('이벤트가 없습니다. 타임라인을 입력해 주세요.\n예) 5:30 kill'); return; }
+    roflClips = generateRoflClips(events, offset, selectedVideoForShort?.duration || 99999, before, after, merge);
+    if (!roflClips.length) { alert('유효한 클립을 생성할 수 없습니다. 이벤트 시간과 오프셋을 확인해 주세요.'); return; }
+  }
 
   const btn = document.getElementById('btn-rofl-confirm');
   btn.disabled = true; btn.textContent = '생성 중...';
