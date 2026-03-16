@@ -30,9 +30,21 @@ function loadQueue() {
   try {
     const data = fs.readJsonSync(QUEUE_FILE);
     if (Array.isArray(data)) {
+      const pending = [];
       data.forEach(j => {
-        if (j.status === 'done' || j.status === 'error') jobs.set(j.id, j);
+        jobs.set(j.id, j);
+        if (j.status === 'queued' || j.status === 'running') {
+          j.status = 'queued';
+          j.progress = { percent: 0, message: '서버 재시작으로 재시도 중...' };
+          pending.push(j);
+        }
       });
+      // Re-queue after event loop starts
+      if (pending.length) {
+        setImmediate(() => {
+          pending.forEach(j => processJob(j).catch(err => console.error('[processJob]', err)));
+        });
+      }
     }
   } catch (_) {}
 }

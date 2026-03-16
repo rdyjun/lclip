@@ -455,7 +455,7 @@ document.getElementById('btn-confirm-short').addEventListener('click', async () 
   if (!selectedVideoForShort) return;
   const name = document.getElementById('project-name-input').value.trim() || 'New Short';
   if (roflFile) {
-    closeModal();
+    document.getElementById('modal-create-short').style.display = 'none';
     await openRoflModal(name);
   } else {
     try {
@@ -596,9 +596,13 @@ function generateRoflClips(events, videoOffset, videoDuration, before, after, me
 
 document.getElementById('rofl-modal-close').addEventListener('click', () => {
   document.getElementById('modal-rofl').style.display = 'none';
+  selectedVideoForShort = null;
 });
 document.getElementById('modal-rofl').addEventListener('click', e => {
-  if (e.target === e.currentTarget) document.getElementById('modal-rofl').style.display = 'none';
+  if (e.target === e.currentTarget) {
+    document.getElementById('modal-rofl').style.display = 'none';
+    selectedVideoForShort = null;
+  }
 });
 document.getElementById('btn-rofl-back').addEventListener('click', () => {
   document.getElementById('modal-rofl').style.display = 'none';
