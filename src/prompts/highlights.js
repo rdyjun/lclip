@@ -1,3 +1,5 @@
+const { SchemaType } = require('@google/generative-ai');
+
 /**
  * LoL 하이라이트 분석 프롬프트 설정
  * - REFERENCE_VIDEOS: Gemini가 자막 스타일을 참고할 유튜브 영상 URL 목록
@@ -6,6 +8,67 @@
 const REFERENCE_VIDEOS = [
   // 예시: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ',
 ];
+
+/**
+ * Gemini structured output 스키마 — JSON 파싱 실패 방지 및 필드 타입 강제
+ */
+function buildResponseSchema() {
+  const subtitle = {
+    type: SchemaType.OBJECT,
+    properties: {
+      offsetSec: { type: SchemaType.NUMBER },
+      text:      { type: SchemaType.STRING },
+      duration:  { type: SchemaType.NUMBER },
+    },
+    required: ['offsetSec', 'text', 'duration'],
+  };
+
+  const segment = {
+    type: SchemaType.OBJECT,
+    properties: {
+      startTime: { type: SchemaType.NUMBER },
+      endTime:   { type: SchemaType.NUMBER },
+    },
+    required: ['startTime', 'endTime'],
+  };
+
+  const short = {
+    type: SchemaType.OBJECT,
+    properties: {
+      type:        { type: SchemaType.STRING },
+      title:       { type: SchemaType.STRING },
+      description: { type: SchemaType.STRING },
+      evidence:    { type: SchemaType.STRING },
+      virality:    { type: SchemaType.NUMBER },
+      startTime:   { type: SchemaType.NUMBER },
+      endTime:     { type: SchemaType.NUMBER },
+      segments:    { type: SchemaType.ARRAY, items: segment },
+      subtitles:   { type: SchemaType.ARRAY, items: subtitle },
+    },
+    required: ['type', 'title', 'description', 'evidence', 'virality', 'subtitles'],
+  };
+
+  const music = {
+    type: SchemaType.OBJECT,
+    properties: {
+      title:       { type: SchemaType.STRING },
+      mood:        { type: SchemaType.STRING },
+      genre:       { type: SchemaType.STRING },
+      source:      { type: SchemaType.STRING },
+      searchQuery: { type: SchemaType.STRING },
+    },
+    required: ['title', 'mood', 'genre', 'source', 'searchQuery'],
+  };
+
+  return {
+    type: SchemaType.OBJECT,
+    properties: {
+      shorts: { type: SchemaType.ARRAY, items: short },
+      music:  { type: SchemaType.ARRAY, items: music },
+    },
+    required: ['shorts', 'music'],
+  };
+}
 
 const SUBTITLE_STYLE_GUIDE = `
 자막 스타일 가이드 (매우 중요):
@@ -41,11 +104,17 @@ function buildPrompt(duration) {
 소리는 완전히 무시하세요. 게임 내 앤카운서 효과음("Triple Kill!", "First Blood!" 등)을 분석 근거로 절대 사용하지 마세요.
 
 오직 아래 시각적 요소로만 판단하세요:
-- 화면 우측 상단 킬피드 (챔피언 아이콘 + 칼 아이콘 조합)
+- 화면 우측 상단 킬피드 (챔피언 초상화 아이콘 + 칼 아이콘 + 챔피언 초상화 아이콘 조합)
 - 화면 중앙에 실제로 표시되는 킬 카운터 텍스트 (Double Kill, Triple Kill 등)
 - 상대 챔피언의 사망 애니메이션 (그레이 처리, 쓰러짐)
-- 체력바 소진 및 골드/경험치 획득 수치 변화
 - 스코어보드 킬 카운트 변화
+
+킬피드 아이콘 구별 (매우 중요):
+- 챔피언 킬: 킬피드에 반드시 피해자의 챔피언 초상화(사각형 아이콘)가 보여야 합니다.
+- 미니언 처치: 칼 아이콘만 나오거나 작은 미니언 아이콘. 챔피언 초상화 없음. → 킬 아님.
+- 타워/오브젝트: 건물/용/바론 아이콘. 챔피언 초상화 없음. → 킬 아님.
+- Double Kill/Triple Kill 텍스트는 챔피언 킬 연속 시에만 표시됩니다. 미니언을 연속으로 먹어도 절대 뜨지 않습니다.
+- 킬피드에서 챔피언 초상화 아이콘을 직접 확인하지 못했으면 킬로 인정하지 마세요.
 
 킬이 화면에 실제로 발생했는지 시각적으로 확인한 후에만 포함하세요. 소리만 들렸거나 확인이 안 되면 제외하세요.
 
@@ -90,65 +159,31 @@ function buildPrompt(duration) {
 ${SUBTITLE_STYLE_GUIDE}
 
 ━━━━━━━━━━━━━━━━━━━━━━━━
-출력 형식
+출력 필드 설명 (JSON 스키마 자동 적용됨)
 ━━━━━━━━━━━━━━━━━━━━━━━━
-반드시 아래 JSON 형식 객체 하나만 반환하세요. 마크다운 코드블록(\`\`\`) 없이:
-{
-  "shorts": [
-    {
-      "type": "standalone",
-      "title": "유튜브 쇼츠 제목 (한국어, 흥미롭고 클릭하고 싶게)",
-      "startTime": 120,
-      "endTime": 170,
-      "description": "킬피드 기준 실제 발생 내용 설명",
-      "virality": 9,
-      "subtitles": [
-        {"offsetSec": 0, "text": "잠깐만", "duration": 1.5},
-        {"offsetSec": 28, "text": "미친", "duration": 2.5}
-      ]
-    },
-    {
-      "type": "montage",
-      "title": "이번 판 멀티킬 모음 TOP3",
-      "segments": [
-        {"startTime": 200, "endTime": 218},
-        {"startTime": 800, "endTime": 820},
-        {"startTime": 1500, "endTime": 1518}
-      ],
-      "description": "3개 멀티킬 모음",
-      "virality": 8,
-      "subtitles": [
-        {"offsetSec": 0, "text": "ㅋㅋ 다 있네", "duration": 2},
-        {"offsetSec": 20, "text": "야", "duration": 2},
-        {"offsetSec": 40, "text": "미친 거 아니야", "duration": 3}
-      ]
-    }
-  ],
-  "music": [
-    {
-      "title": "곡 제목 - 아티스트",
-      "mood": "에너지틱, 승리감",
-      "genre": "EDM",
-      "source": "NCS (저작권 무료)",
-      "searchQuery": "Elektronomia Sky High NCS"
-    }
-  ]
-}
+shorts 배열 각 항목:
+- type: "standalone" (연속 장면) 또는 "montage" (분리된 장면 묶음)
+- title: 한국어 유튜브 쇼츠 제목. 흥미롭고 클릭하고 싶게.
+- evidence: 킬피드에서 눈으로 확인한 것을 그대로 나열. 예: "[32초] 킬피드에 카이사 초상화 확인. [38초] 킬피드에 아리 초상화 확인 → 더블킬 텍스트 표시." 챔피언 초상화를 확인 못 했으면 "확인 불가"라고 쓰고 해당 쇼츠를 제외하세요.
+- description: 장면 전체 요약. evidence 기반으로 작성.
+- virality: 1~10 (10 = 반드시 터질 장면)
+- standalone: startTime, endTime 필드 (초 단위 정수)
+- montage: segments 배열 ([{startTime, endTime}, ...])
+- subtitles: [{offsetSec, text, duration}, ...] — offsetSec은 쇼츠 기준 상대 시간 (0부터)
 
 길이 규칙:
 - standalone: endTime - startTime ≤ 60초 (펜타킬 특별한 경우만 최대 90초)
 - montage: 모든 segments 합산 ≤ 60초
 
 자막 규칙:
-- offsetSec: 쇼츠 타임라인 기준 상대 시간 (0부터 시작)
-- 각 쇼츠당 2~4개 자막
+- 각 쇼츠당 2~4개, offsetSec은 0부터 시작하는 상대 시간
 - 앤카운서 멘트, 캐릭터 대사 절대 금지
 
 선정 규칙:
-- 1~8개 쇼츠, virality 6점 이상만 포함 (킬/어시 모음 montage는 6점도 허용)
-- virality: 1~10점 (10 = 유튜브에서 반드시 터질 장면)
-- startTime / endTime: 초 단위 정수, 0 이상 ${Math.round(duration)} 이하
-- 음악 3개 추천 (NCS, Artlist, Epidemic Sound 등 유튜브 저작권 무료 위주)
+- 1~8개 쇼츠, virality 6점 이상만 포함 (montage는 6점도 허용)
+- startTime / endTime: 0 이상 ${Math.round(duration)} 이하 정수
+- music: 3개 추천 (NCS, Artlist, Epidemic Sound 등 유튜브 저작권 무료 위주)
+  각 항목: title(곡명-아티스트), mood, genre, source, searchQuery
 - 제목이 해당 구간과 맞지 않으면 포함하지 마세요. 없는 게 낫습니다.`;
 }
 
@@ -186,4 +221,4 @@ function buildContent(geminiFile, duration, aiConfig = {}) {
   return parts;
 }
 
-module.exports = { buildContent, REFERENCE_VIDEOS };
+module.exports = { buildContent, buildResponseSchema, REFERENCE_VIDEOS };
