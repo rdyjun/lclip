@@ -8,7 +8,7 @@ const { GoogleGenerativeAI } = require('@google/generative-ai');
 const { GoogleAIFileManager, FileState } = require('@google/generative-ai/server');
 const { Videos } = require('../models/db');
 const config = require('../config');
-const { buildContent } = require('../prompts/highlights');
+const { buildContent, buildResponseSchema } = require('../prompts');
 const { EventEmitter } = require('events');
 
 const aiEmitter = new EventEmitter();
@@ -194,37 +194,31 @@ async function processJob(job) {
     notifyClients(job);
 
     const genAI = new GoogleGenerativeAI(apiKey);
-    const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
-
-    appendLog(job, 'Gemini 영상 분석 요청');
     const aiConfig = loadAiConfig();
+    const modelName = aiConfig.model || 'gemini-2.5-flash';
+    const thinkingBudget = aiConfig.thinkingBudget ?? 8192;
+
+    const model = genAI.getGenerativeModel({
+      model: modelName,
+      generationConfig: {
+        responseMimeType: 'application/json',
+        responseSchema: buildResponseSchema(),
+        temperature: 1,
+        ...(thinkingBudget >= 0 && { thinkingConfig: { thinkingBudget } }),
+      },
+    });
+
+    appendLog(job, `Gemini 영상 분석 요청 (${modelName}, thinking=${thinkingBudget})`);
     const response = await model.generateContent(buildContent(geminiFile, video.duration, aiConfig));
 
     job.progress = { message: '결과 처리 중...', percent: 90 };
     notifyClients(job);
 
-    const text = response.response.text();
-    const clean = text.replace(/```[a-z]*\n?/gi, '').trim();
-    // Accept both object {"shorts":[...],"music":[...]} and bare array fallback
-    const objMatch   = clean.match(/\{[\s\S]*\}/);
-    const arrayMatch = clean.match(/\[[\s\S]*\]/);
-    if (!objMatch && !arrayMatch) {
-      throw new Error('Gemini가 유효한 JSON을 반환하지 않았습니다:\n' + text.slice(0, 300));
-    }
-    const parsed  = JSON.parse(objMatch ? objMatch[0] : arrayMatch[0]);
-    const rawList = Array.isArray(parsed) ? parsed : (parsed.shorts || []);
-    const music   = Array.isArray(parsed.music) ? parsed.music : [];
+    const parsed  = JSON.parse(response.response.text());
+    const rawList = parsed.shorts || [];
+    const music   = parsed.music  || [];
 
     const cap = t => Math.min(video.duration, Math.max(0, Math.round(Number(t) || 0)));
-
-    const normalizeSubtitles = subs =>
-      Array.isArray(subs)
-        ? subs.map(s => ({
-            offsetSec: Math.max(0, Number(s.offsetSec) || 0),
-            text:      String(s.text || ''),
-            duration:  Math.max(1, Number(s.duration) || 3),
-          }))
-        : [];
 
     const shorts = rawList
       .map(h => {
@@ -240,7 +234,6 @@ async function processJob(job) {
             description: h.description || '',
             virality:    Number(h.virality) || 0,
             segments,
-            subtitles:   normalizeSubtitles(h.subtitles),
             totalDuration,
           };
         } else {
@@ -253,7 +246,6 @@ async function processJob(job) {
             description: h.description || '',
             virality:    Number(h.virality) || 0,
             segments:    [{ srcStart, srcEnd }],
-            subtitles:   normalizeSubtitles(h.subtitles),
             totalDuration: srcEnd - srcStart,
           };
         }
@@ -288,6 +280,12 @@ router.post('/config', (req, res) => {
   const cfg = {
     referenceVideos: Array.isArray(req.body.referenceVideos) ? req.body.referenceVideos : [],
     concept: String(req.body.concept || ''),
+    model: ['gemini-2.5-flash', 'gemini-2.5-pro'].includes(req.body.model)
+      ? req.body.model
+      : 'gemini-2.5-flash',
+    thinkingBudget: Number.isInteger(Number(req.body.thinkingBudget))
+      ? Math.max(-1, Number(req.body.thinkingBudget))
+      : 8192,
   };
   saveAiConfig(cfg);
   res.json(cfg);
