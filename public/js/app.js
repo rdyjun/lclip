@@ -661,8 +661,14 @@ function runAutoScore() {
   const before = 10, after = 10;
   const videoDuration = selectedVideoForShort?.duration || 99999;
 
-  const killEvents     = (roflData.events || []).filter(e => e.type === 'kill');
+  let killEvents       = (roflData.events || []).filter(e => e.type === 'kill');
   const activityEvents = (roflData.events || []).filter(e => e.type === 'activity');
+
+  // Riot API events have killerIdx — filter by index for accurate "my kills only"
+  if (killEvents.length > 0 && roflData.eventsSource === 'riot_api' && !isNaN(participantIdx)) {
+    const myKills = killEvents.filter(e => e.killerIdx === participantIdx);
+    if (myKills.length > 0) killEvents = myKills;
+  }
 
   let clips = [];
   if (killEvents.length > 0) {

@@ -12,8 +12,9 @@ const path = require('path');
 const ROOT = path.join(__dirname, '..');   // project root (one level above src/)
 
 module.exports = {
-  PORT:        parseInt(process.env.PORT, 10) || 3000,
-  DATA_DIR:    process.env.DATA_DIR    || path.join(ROOT, 'data'),
-  UPLOADS_DIR: process.env.UPLOADS_DIR || path.join(ROOT, 'uploads'),
-  EXPORTS_DIR: process.env.EXPORTS_DIR || path.join(ROOT, 'exports'),
+  PORT:         parseInt(process.env.PORT, 10) || 3000,
+  DATA_DIR:     process.env.DATA_DIR    || path.join(ROOT, 'data'),
+  UPLOADS_DIR:  process.env.UPLOADS_DIR || path.join(ROOT, 'uploads'),
+  EXPORTS_DIR:  process.env.EXPORTS_DIR || path.join(ROOT, 'exports'),
+  RIOT_API_KEY: process.env.RIOT_API_KEY || '',
 };

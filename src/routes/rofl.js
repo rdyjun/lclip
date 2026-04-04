@@ -5,6 +5,7 @@ const multer   = require('multer');
 const path     = require('path');
 const fs       = require('fs-extra');
 const { parseROFL } = require('../utils/roflParser');
+const { fetchMatchKillEvents } = require('../utils/riotApi');
 const config   = require('../config');
 
 const upload = multer({
@@ -24,6 +25,25 @@ router.post('/parse', upload.single('rofl'), async (req, res) => {
   const filePath = req.file.path;
   try {
     const result = parseROFL(filePath);
+
+    // Enrich with Riot API kill events (exact timestamps) if API key is set
+    if (config.RIOT_API_KEY && result.matchId) {
+      try {
+        const basename = path.basename(req.file.originalname, '.rofl');
+        const { events: riotEvents } = await fetchMatchKillEvents(basename);
+        if (riotEvents.length > 0) {
+          result.events = riotEvents;
+          result.eventsFound = true;
+          result.eventsSource = 'riot_api';
+        }
+      } catch (apiErr) {
+        console.warn('[ROFL] Riot API 킬 이벤트 조회 실패 (ROFL 분석 결과 사용):', apiErr.message);
+        result.eventsSource = 'rofl_heuristic';
+      }
+    } else {
+      result.eventsSource = 'rofl_heuristic';
+    }
+
     res.json(result);
   } catch (err) {
     console.error('[ROFL parse error]', err.message);
