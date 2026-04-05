@@ -8,7 +8,7 @@
   <link rel="stylesheet" href="/css/editor.css">
   <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@300;400;500;700&family=Nanum+Gothic:wght@400;700&family=Nanum+Myeongjo:wght@400;700&family=Gowun+Dodum&family=Gowun+Batang&family=Black+Han+Sans&family=Do+Hyeon&family=IBM+Plex+Sans+KR:wght@400;700&family=Jua&display=swap" rel="stylesheet">
 </head>
-<body class="editor-mode">
+<body class="editor-mode" oncontextmenu="event.preventDefault()">
 
   <!-- Top Toolbar -->
   <div class="editor-toolbar">
@@ -193,6 +193,8 @@
     <div class="ctx-divider"></div>
     <div class="ctx-item" data-action="delete">🗑 삭제</div>
     <div class="ctx-item" data-action="duplicate">복사</div>
+    <div class="ctx-divider" id="ctx-divider-new-project"></div>
+    <div class="ctx-item" data-action="new-project" id="ctx-new-project">새 프로젝트로 분리</div>
   </div>
 
   <script src="/api/defaults.js"></script>

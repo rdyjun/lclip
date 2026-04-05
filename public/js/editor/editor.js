@@ -502,6 +502,26 @@
         };
         EditorState.addClip(layerId, newClip);
         Timeline.render();
+      } else if (action === 'new-project') {
+        const project = EditorState.getProject();
+        if (!project?.sourceVideoId) { alert('소스 영상 정보를 찾을 수 없습니다.'); return; }
+        fetch('/api/projects', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            sourceVideoId: project.sourceVideoId,
+            name: `${project.name} - 클립`,
+            roflClips: [{
+              srcStart:   clip.srcStart ?? 0,
+              srcEnd:     clip.srcEnd   ?? clip.endTime,
+              eventTypes: clip.eventTypes || [],
+              subtitles:  [],
+            }]
+          })
+        }).then(r => r.json()).then(p => {
+          if (p.id) window.open(`/editor/${p.id}`, '_blank');
+          else alert('프로젝트 생성 실패: ' + (p.error || '알 수 없는 오류'));
+        }).catch(err => alert('프로젝트 생성 실패: ' + err.message));
       }
 
       rightClickInfo = null;

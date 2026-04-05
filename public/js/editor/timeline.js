@@ -215,8 +215,11 @@ const Timeline = (() => {
       EditorState.selectClip(layer.id, clip.id);
       const rect   = el.getBoundingClientRect();
       const localX = e.clientX - rect.left;
-      rightClickInfo = { layerId: layer.id, clipId: clip.id, x: clip.startTime * pxPerSec + localX };
+      rightClickInfo = { layerId: layer.id, clipId: clip.id, clipType: clip.type, x: clip.startTime * pxPerSec + localX };
       window.rightClickInfo = rightClickInfo;
+      const isVideo = clip.type === 'video';
+      document.getElementById('ctx-new-project').style.display    = isVideo ? '' : 'none';
+      document.getElementById('ctx-divider-new-project').style.display = isVideo ? '' : 'none';
       const menu = document.getElementById('context-menu');
       menu.style.display = 'block';
       menu.style.left    = e.clientX + 'px';
