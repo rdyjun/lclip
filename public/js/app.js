@@ -484,6 +484,11 @@ async function openRoflModal(name) {
     const res = await fetch('/api/rofl/parse', { method: 'POST', body: formData });
     if (!res.ok) throw new Error(await res.text());
     roflData = await res.json();
+    if (roflData.apiKeyExpired) {
+      document.getElementById('modal-rofl').style.display = 'none';
+      showToast('❌ Riot API 키가 만료되었습니다. .env의 RIOT_API_KEY를 갱신해주세요.', 6000);
+      return;
+    }
     renderRoflModalBody(roflData);
   } catch (err) {
     let msg = err.message;

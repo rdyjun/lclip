@@ -37,7 +37,11 @@ router.post('/parse', upload.single('rofl'), async (req, res) => {
           result.eventsSource = 'riot_api';
         }
       } catch (apiErr) {
-        console.warn('[ROFL] Riot API 킬 이벤트 조회 실패 (ROFL 분석 결과 사용):', apiErr.message);
+        console.warn('[ROFL] Riot API 킬 이벤트 조회 실패:', apiErr.message);
+        const msg = apiErr.message || '';
+        if (msg.includes('403') || msg.includes('401') || msg.includes('Forbidden') || msg.includes('Unauthorized')) {
+          return res.status(200).json({ ...result, apiKeyExpired: true, events: [], eventsFound: false });
+        }
         result.eventsSource = 'rofl_heuristic';
       }
     } else {

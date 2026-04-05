@@ -202,8 +202,8 @@ function extractROFL2Events(buf) {
 
   if (chunks.length < 4) return [];
 
-  // Only regular game chunks (type=1); skip first 90 s (loading/pre-game)
-  const regular = chunks.filter(c => c.chunkType === 1 && c.startTimeS >= 90);
+  // Only regular game chunks (type=1); skip first 300 s (laning phase)
+  const regular = chunks.filter(c => c.chunkType === 1 && c.startTimeS >= 300);
   if (regular.length < 4) return [];
 
   // Z-score of decompressed size detects high-activity (fight) windows
@@ -215,7 +215,7 @@ function extractROFL2Events(buf) {
   const events = [];
   for (const c of regular) {
     const z = (c.decompLen - mean) / stddev;
-    if (z >= 0.8) {
+    if (z >= 1.5) {
       events.push({
         type:      'activity',
         timeS:     Math.round(c.startTimeS),
