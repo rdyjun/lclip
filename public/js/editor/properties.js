@@ -166,6 +166,43 @@ const Properties = (() => {
       EditorState.updateClip(layerId, clipId, { height: parseInt(v) }); Player.renderFrame();
     })));
     body.appendChild(posSection);
+
+    // ── New project from clip ────────────────────────────────────────────────
+    const newProjBtn = document.createElement('button');
+    newProjBtn.className = 'btn btn-sm';
+    newProjBtn.style.cssText = 'width:100%;margin-top:12px;background:var(--accent,#7c5cbf);color:#fff;border:none;padding:8px;border-radius:6px;cursor:pointer;font-size:13px';
+    newProjBtn.textContent = '새 프로젝트로 분리';
+    newProjBtn.addEventListener('click', async () => {
+      const project = EditorState.getProject();
+      if (!project?.sourceVideoId) { alert('소스 영상 정보를 찾을 수 없습니다.'); return; }
+      newProjBtn.disabled = true;
+      newProjBtn.textContent = '생성 중...';
+      try {
+        const res = await fetch('/api/projects', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            sourceVideoId: project.sourceVideoId,
+            name: `${project.name} - 클립`,
+            roflClips: [{
+              srcStart: clip.srcStart ?? 0,
+              srcEnd:   clip.srcEnd   ?? clip.endTime,
+              eventTypes: clip.eventTypes || [],
+              subtitles: [],
+            }]
+          })
+        });
+        if (!res.ok) throw new Error(await res.text());
+        const newProject = await res.json();
+        window.open(`/editor/${newProject.id}`, '_blank');
+      } catch (err) {
+        alert('프로젝트 생성 실패: ' + err.message);
+      } finally {
+        newProjBtn.disabled = false;
+        newProjBtn.textContent = '새 프로젝트로 분리';
+      }
+    });
+    body.appendChild(newProjBtn);
   }
 
   const SUBTITLE_FONTS = [
