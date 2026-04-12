@@ -225,7 +225,11 @@
         <button class="modal-close" id="ai-settings-close">✕</button>
       </div>
       <div class="modal-body">
-        <label class="form-label">참고 영상 URL</label>
+        <label class="form-label">Riot API 키</label>
+        <p class="form-hint" style="margin-bottom:8px">ROFL 파일 분석 시 정확한 킬 타임스탬프 조회에 사용됩니다.</p>
+        <input type="text" class="form-input" id="ai-settings-riot-key" placeholder="RGAPI-xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" style="font-family:monospace;font-size:12px">
+
+        <label class="form-label" style="margin-top:16px;display:block">참고 영상 URL</label>
         <p class="form-hint" style="margin-bottom:8px">자막 스타일과 편집 방식을 모방할 유튜브 영상 링크를 한 줄에 하나씩 입력하세요.<br>비워두면 기본 스타일을 사용합니다.</p>
         <textarea class="form-input" id="ai-settings-refs" rows="5"
           placeholder="https://www.youtube.com/watch?v=...&#10;https://www.youtube.com/watch?v=..."></textarea>

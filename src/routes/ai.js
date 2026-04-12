@@ -272,6 +272,30 @@ async function processJob(job) {
   }
 }
 
+// GET /api/ai/riot-key
+router.get('/riot-key', (_req, res) => {
+  res.json({ riotApiKey: config.RIOT_API_KEY || '' });
+});
+
+// POST /api/ai/riot-key
+router.post('/riot-key', (req, res) => {
+  const key = String(req.body.riotApiKey || '').trim();
+  const envPath = path.join(__dirname, '../../.env');
+  try {
+    let content = fs.existsSync(envPath) ? fs.readFileSync(envPath, 'utf8') : '';
+    if (/^RIOT_API_KEY=.*$/m.test(content)) {
+      content = content.replace(/^RIOT_API_KEY=.*$/m, `RIOT_API_KEY=${key}`);
+    } else {
+      content = content.trimEnd() + `\nRIOT_API_KEY=${key}\n`;
+    }
+    fs.writeFileSync(envPath, content, 'utf8');
+    config.RIOT_API_KEY = key;
+    res.json({ riotApiKey: key });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // GET /api/ai/config
 router.get('/config', (req, res) => res.json(loadAiConfig()));
 

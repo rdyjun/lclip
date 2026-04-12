@@ -1117,9 +1117,13 @@ refreshAiQueue();
 // ── AI Settings Modal ─────────────────────────────────────────────────────────
 async function openAiSettings() {
   try {
-    const cfg = await API.get('/api/ai/config');
+    const [cfg, riot] = await Promise.all([
+      API.get('/api/ai/config'),
+      API.get('/api/ai/riot-key'),
+    ]);
     document.getElementById('ai-settings-refs').value = (cfg.referenceVideos || []).join('\n');
     document.getElementById('ai-settings-concept').value = cfg.concept || '';
+    document.getElementById('ai-settings-riot-key').value = riot.riotApiKey || '';
   } catch (_) {}
   document.getElementById('modal-ai-settings').style.display = 'flex';
 }
@@ -1142,7 +1146,11 @@ document.getElementById('ai-settings-save').addEventListener('click', async () =
   btn.disabled = true;
   btn.textContent = '저장 중...';
   try {
-    await API.post('/api/ai/config', { referenceVideos, concept });
+    const riotApiKey = document.getElementById('ai-settings-riot-key').value.trim();
+    await Promise.all([
+      API.post('/api/ai/config', { referenceVideos, concept }),
+      API.post('/api/ai/riot-key', { riotApiKey }),
+    ]);
     document.getElementById('modal-ai-settings').style.display = 'none';
   } catch (err) {
     alert('저장 실패: ' + err.message);
