@@ -504,9 +504,14 @@ async function openRoflModal(name) {
         <label class="prop-label" style="min-width:140px">영상 시작 오프셋 (초)</label>
         <input type="number" class="prop-input" id="rofl-video-offset" value="0" min="0" step="0.1">
       </div>
+      <div class="prop-row">
+        <label class="prop-label" style="min-width:140px">게임 시작 시간</label>
+        <input type="text" class="prop-input" id="rofl-game-start-time" value="0:00" placeholder="1:30">
+      </div>
       <div class="prop-row"><label class="prop-label" style="min-width:140px">이벤트 전 여유 (초)</label><input type="number" class="prop-input" id="rofl-before" value="10" min="0" max="60"></div>
       <div class="prop-row"><label class="prop-label" style="min-width:140px">이벤트 후 여유 (초)</label><input type="number" class="prop-input" id="rofl-after" value="10" min="0" max="60"></div>
       <div class="prop-row"><label class="prop-label" style="min-width:140px">연속 이벤트 합치기 (초)</label><input type="number" class="prop-input" id="rofl-merge" value="20" min="0" max="120"></div>`;
+    syncRoflGameStartInputs();
     document.getElementById('btn-rofl-confirm').disabled = false;
   }
 }
@@ -564,6 +569,11 @@ function renderRoflModalBody(data) {
       <input type="number" class="prop-input" id="rofl-video-offset" value="0" min="0" step="0.1"
         title="녹화 영상에서 게임이 시작되는 시점. 예: 로딩화면 포함 시 ~90 입력">
     </div>
+    <div class="prop-row">
+      <label class="prop-label" style="min-width:140px">게임 시작 시간</label>
+      <input type="text" class="prop-input" id="rofl-game-start-time" value="0:00" placeholder="1:30"
+        title="mm:ss로 입력하면 오프셋(초)과 자동 연동됩니다.">
+    </div>
     <p style="font-size:11px;color:var(--text-muted);margin-bottom:8px">예: 로딩화면 포함 녹화 시 약 90초 입력</p>
     <div id="rofl-auto-section" style="display:none;margin-top:4px">
       <label class="form-label" style="margin-bottom:6px">자동 분석 결과 <span style="font-size:11px;color:var(--text-muted);font-weight:400">(점수 순 — 체크된 클립만 생성)</span></label>
@@ -603,8 +613,10 @@ function renderRoflModalBody(data) {
       document.getElementById('btn-rofl-confirm').disabled = true;
     }
   });
-  document.getElementById('rofl-video-offset').addEventListener('change', () => {
-    if (sel.value !== '') runAutoScore();
+  syncRoflGameStartInputs({
+    onOffsetChange: () => {
+      if (sel.value !== '') runAutoScore();
+    }
   });
 
   document.getElementById('btn-rofl-confirm').disabled = true;
@@ -613,6 +625,53 @@ function renderRoflModalBody(data) {
 function fmtTime(s) {
   const m = Math.floor(s / 60), sec = Math.floor(s % 60);
   return `${m}:${sec.toString().padStart(2, '0')}`;
+}
+
+function parseRoflGameStartTime(text) {
+  const raw = String(text || '').trim();
+  if (!raw) return NaN;
+  const mmss = raw.match(/^(\d+):([0-5]?\d)$/);
+  if (mmss) {
+    return parseInt(mmss[1], 10) * 60 + parseInt(mmss[2], 10);
+  }
+  const sec = Number(raw);
+  if (!Number.isFinite(sec)) return NaN;
+  return Math.max(0, sec);
+}
+
+function syncRoflGameStartInputs(opts = {}) {
+  const offsetEl = document.getElementById('rofl-video-offset');
+  const startEl = document.getElementById('rofl-game-start-time');
+  if (!offsetEl || !startEl) return;
+
+  const fireOffsetChange = () => {
+    if (typeof opts.onOffsetChange === 'function') opts.onOffsetChange();
+  };
+
+  const setStartFromOffset = () => {
+    const offset = parseFloat(offsetEl.value || 0);
+    const safe = Number.isFinite(offset) && offset >= 0 ? offset : 0;
+    startEl.value = fmtTime(safe);
+  };
+
+  setStartFromOffset();
+
+  startEl.addEventListener('change', () => {
+    const seconds = parseRoflGameStartTime(startEl.value);
+    if (Number.isNaN(seconds)) {
+      showToast('게임 시작 시간 형식이 올바르지 않습니다. 예: 1:30', 3500);
+      setStartFromOffset();
+      return;
+    }
+    offsetEl.value = seconds;
+    setStartFromOffset();
+    fireOffsetChange();
+  });
+
+  offsetEl.addEventListener('change', () => {
+    setStartFromOffset();
+    fireOffsetChange();
+  });
 }
 
 // ── ROFL Auto-Score ──────────────────────────────────────────────────────────
