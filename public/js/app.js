@@ -622,8 +622,9 @@ function buildScoredClipsFromKills(killEvents, participantName, videoOffset, vid
       const k = (e.killer || '').toLowerCase();
       return k && (k === base || k.includes(base) || base.includes(k));
     });
-    if (filtered.length > 0) myKills = filtered;
+    myKills = filtered;
   }
+  if (!myKills.length) return [];
   const sorted = [...myKills].sort((a, b) => a.timeS - b.timeS);
   const clusters = [];
   let cur = [sorted[0]];
@@ -672,12 +673,30 @@ function runAutoScore() {
   // Riot API events have killerIdx — filter by index for accurate "my kills only"
   if (killEvents.length > 0 && roflData.eventsSource === 'riot_api' && !isNaN(participantIdx)) {
     const myKills = killEvents.filter(e => e.killerIdx === participantIdx);
-    if (myKills.length > 0) killEvents = myKills;
+    if (myKills.length === 0) {
+      _scoredClips = [];
+      renderScoredClipsList();
+      const autoSection = document.getElementById('rofl-auto-section');
+      if (autoSection) autoSection.style.display = 'none';
+      document.getElementById('btn-rofl-confirm').disabled = true;
+      showToast('❌ 선택한 챔피언의 킬 로그를 찾지 못했습니다. 챔피언 선택 또는 ROFL 파일을 확인해주세요.', 5000);
+      return;
+    }
+    killEvents = myKills;
   }
 
   let clips = [];
   if (killEvents.length > 0) {
     clips = buildScoredClipsFromKills(killEvents, participant?.summonerName, offset, videoDuration, before, after);
+    if (clips.length === 0 && participant?.summonerName) {
+      _scoredClips = [];
+      renderScoredClipsList();
+      const autoSection = document.getElementById('rofl-auto-section');
+      if (autoSection) autoSection.style.display = 'none';
+      document.getElementById('btn-rofl-confirm').disabled = true;
+      showToast('❌ 선택한 챔피언 필터에 일치하는 킬 이벤트가 없습니다.', 5000);
+      return;
+    }
   } else if (activityEvents.length > 0) {
     clips = buildScoredClipsFromActivity(activityEvents, offset, videoDuration, before, after);
   }
