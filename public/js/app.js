@@ -411,12 +411,13 @@ function createProjectCard(project) {
 let selectedVideoForShort = null;
 let roflFile = null;
 let roflData = null;
+let roflParticipantPool = [];
 
 function openCreateShortModal(video) {
   selectedVideoForShort = video;
   document.getElementById('source-video-name').textContent = video.name;
   document.getElementById('project-name-input').value = `${video.name} - Short`;
-  roflFile = null; roflData = null;
+  roflFile = null; roflData = null; roflParticipantPool = [];
   document.getElementById('rofl-file-input').value = '';
   document.getElementById('rofl-file-name').textContent = '선택된 파일 없음';
   document.getElementById('btn-clear-rofl').style.display = 'none';
@@ -434,7 +435,7 @@ document.getElementById('rofl-file-input').addEventListener('change', e => {
   document.getElementById('btn-clear-rofl').style.display = '';
 });
 document.getElementById('btn-clear-rofl').addEventListener('click', () => {
-  roflFile = null; roflData = null;
+  roflFile = null; roflData = null; roflParticipantPool = [];
   document.getElementById('rofl-file-input').value = '';
   document.getElementById('rofl-file-name').textContent = '선택된 파일 없음';
   document.getElementById('btn-clear-rofl').style.display = 'none';
@@ -473,6 +474,7 @@ let roflProjectName = '';
 
 async function openRoflModal(name) {
   roflProjectName = name;
+  roflParticipantPool = [];
   const body = document.getElementById('rofl-modal-body');
   body.innerHTML = '<p style="color:var(--text-secondary);font-size:13px">⏳ ROFL 파일 분석 중...</p>';
   document.getElementById('btn-rofl-confirm').disabled = true;
@@ -509,6 +511,32 @@ async function openRoflModal(name) {
   }
 }
 
+function buildRoflParticipantPool(data) {
+  if (
+    data?.eventsSource === 'riot_api' &&
+    Array.isArray(data.riotParticipants) &&
+    data.riotParticipants.length > 0
+  ) {
+    return data.riotParticipants.map((p, i) => ({
+      riotIdx: Number.isInteger(p.index) ? p.index : i,
+      championName: p.championName || `챔피언 ${i + 1}`,
+      summonerName: p.summonerName || `플레이어 ${i + 1}`,
+      kills: parseInt(p.kills, 10) || 0,
+      deaths: parseInt(p.deaths, 10) || 0,
+      assists: parseInt(p.assists, 10) || 0,
+    }));
+  }
+
+  return (data.participants || []).map((p, i) => ({
+    riotIdx: i,
+    championName: p.championName || `챔피언 ${i + 1}`,
+    summonerName: p.summonerName || `플레이어 ${i + 1}`,
+    kills: parseInt(p.kills, 10) || 0,
+    deaths: parseInt(p.deaths, 10) || 0,
+    assists: parseInt(p.assists, 10) || 0,
+  }));
+}
+
 function renderRoflModalBody(data) {
   const body = document.getElementById('rofl-modal-body');
   const matchDur = data.matchLengthMs
@@ -516,7 +544,8 @@ function renderRoflModalBody(data) {
     : '알 수 없음';
 
   let participantOptions = '<option value="">-- 선택하세요 --</option>';
-  (data.participants || []).forEach((p, i) => {
+  roflParticipantPool = buildRoflParticipantPool(data);
+  roflParticipantPool.forEach((p, i) => {
     participantOptions += `<option value="${i}">${p.championName} (${p.summonerName}) · K${p.kills}/D${p.deaths}/A${p.assists}</option>`;
   });
 
@@ -662,17 +691,30 @@ function runAutoScore() {
   if (!roflData) return;
   const selEl = document.getElementById('rofl-champion-select');
   const participantIdx = selEl ? parseInt(selEl.value) : NaN;
-  const participant = !isNaN(participantIdx) ? roflData.participants?.[participantIdx] : null;
+  const participant = !isNaN(participantIdx) ? roflParticipantPool?.[participantIdx] : null;
   const offset = parseFloat(document.getElementById('rofl-video-offset')?.value || 0);
   const before = 10, after = 10;
   const videoDuration = selectedVideoForShort?.duration || 99999;
+  const isRiotApi = roflData.eventsSource === 'riot_api';
 
   let killEvents       = (roflData.events || []).filter(e => e.type === 'kill');
   const activityEvents = (roflData.events || []).filter(e => e.type === 'activity');
 
   // Riot API events have killerIdx — filter by index for accurate "my kills only"
-  if (killEvents.length > 0 && roflData.eventsSource === 'riot_api' && !isNaN(participantIdx)) {
-    const myKills = killEvents.filter(e => e.killerIdx === participantIdx);
+  if (killEvents.length > 0 && isRiotApi && !isNaN(participantIdx)) {
+    const targetRiotIdx = Number.isInteger(participant?.riotIdx) ? participant.riotIdx : participantIdx;
+    let myKills = killEvents.filter(e => e.killerIdx === targetRiotIdx);
+    if (myKills.length === 0 && participant) {
+      const baseName = participant.summonerName.toLowerCase().replace(/\s*#.*$/, '');
+      const champion = participant.championName.toLowerCase();
+      myKills = killEvents.filter(e => {
+        const killerName = (e.killer || '').toLowerCase().replace(/\s*#.*$/, '');
+        const killerChamp = (e.killerChampion || '').toLowerCase();
+        const nameMatch = baseName && (killerName === baseName || killerName.includes(baseName) || baseName.includes(killerName));
+        const champMatch = champion && (killerChamp === champion || killerChamp.includes(champion) || champion.includes(killerChamp));
+        return nameMatch || champMatch;
+      });
+    }
     if (myKills.length === 0) {
       _scoredClips = [];
       renderScoredClipsList();
@@ -687,8 +729,9 @@ function runAutoScore() {
 
   let clips = [];
   if (killEvents.length > 0) {
-    clips = buildScoredClipsFromKills(killEvents, participant?.summonerName, offset, videoDuration, before, after);
-    if (clips.length === 0 && participant?.summonerName) {
+    const participantNameForFilter = isRiotApi ? '' : participant?.summonerName;
+    clips = buildScoredClipsFromKills(killEvents, participantNameForFilter, offset, videoDuration, before, after);
+    if (clips.length === 0 && participantNameForFilter) {
       _scoredClips = [];
       renderScoredClipsList();
       const autoSection = document.getElementById('rofl-auto-section');

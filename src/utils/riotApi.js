@@ -1,14 +1,9 @@
 'use strict';
 /**
- * Riot Games API helper — Match Timeline v5
+ * Riot Games API helper (Match Timeline v5).
  *
  * Fetches per-kill timestamps for a given matchId.
- * matchId format from ROFL filename: "KR-8113900197" → API uses "KR_8113900197"
- *
- * Regional routing (platformId → regional endpoint):
- *   KR, JP → asia.api.riotgames.com
- *   EUW, EUNE, TR, RU → europe.api.riotgames.com
- *   NA, BR, LAN, LAS → americas.api.riotgames.com
+ * ROFL filename format: "KR-8113900197" -> API matchId "KR_8113900197".
  */
 
 const https = require('https');
@@ -25,8 +20,18 @@ function getRegion(platformId) {
   return PLATFORM_TO_REGION[platformId?.toUpperCase()] || 'asia';
 }
 
+function getDisplayName(participant) {
+  if (!participant) return '';
+  if (participant.riotIdGameName) {
+    return participant.riotIdTagline
+      ? `${participant.riotIdGameName}#${participant.riotIdTagline}`
+      : participant.riotIdGameName;
+  }
+  return participant.summonerName || participant.gameName || participant.puuid || '';
+}
+
 /**
- * Simple HTTPS GET — returns parsed JSON or throws.
+ * Simple HTTPS GET that returns parsed JSON.
  */
 function httpsGet(url, headers) {
   return new Promise((resolve, reject) => {
@@ -37,68 +42,95 @@ function httpsGet(url, headers) {
         const body = Buffer.concat(chunks).toString('utf8');
         if (res.statusCode !== 200) {
           reject(new Error(`Riot API ${res.statusCode}: ${body}`));
-        } else {
-          try { resolve(JSON.parse(body)); }
-          catch (e) { reject(new Error('Riot API 응답 파싱 실패: ' + e.message)); }
+          return;
+        }
+        try {
+          resolve(JSON.parse(body));
+        } catch (e) {
+          reject(new Error('Riot API response parse failed: ' + e.message));
         }
       });
     });
     req.on('error', reject);
-    req.setTimeout(10000, () => { req.destroy(); reject(new Error('Riot API 요청 타임아웃')); });
+    req.setTimeout(10000, () => {
+      req.destroy();
+      reject(new Error('Riot API request timeout'));
+    });
   });
 }
 
 /**
  * Fetch kill events from Riot Match Timeline API.
  *
- * @param {string} roflBasename  e.g. "KR-8113900197" (from ROFL filename without .rofl)
- * @returns {Promise<{ events: Array, matchId: string }>}
- *   events: [{ type:'kill', timeS, killer, victim, assistCount }]
+ * @param {string} roflBasename e.g. "KR-8113900197"
+ * @returns {Promise<{ events: Array, matchId: string, participants: Array }>}
  */
 async function fetchMatchKillEvents(roflBasename) {
   const apiKey = config.RIOT_API_KEY;
-  if (!apiKey) throw new Error('RIOT_API_KEY가 설정되지 않았습니다');
+  if (!apiKey) throw new Error('RIOT_API_KEY is not configured');
 
-  // "KR-8113900197" → platform="KR", numeric="8113900197"
   const match = roflBasename.match(/^([A-Z0-9]+)-(\d+)$/i);
-  if (!match) throw new Error(`ROFL 파일명에서 matchId를 추출할 수 없습니다: ${roflBasename}`);
+  if (!match) throw new Error(`Cannot parse matchId from ROFL filename: ${roflBasename}`);
 
   const platformId = match[1].toUpperCase();
-  const numericId  = match[2];
-  const matchId    = `${platformId}_${numericId}`;
-  const region     = getRegion(platformId);
+  const numericId = match[2];
+  const matchId = `${platformId}_${numericId}`;
+  const region = getRegion(platformId);
+  const headers = { 'X-Riot-Token': apiKey };
 
-  const url = `https://${region}.api.riotgames.com/lol/match/v5/matches/${matchId}/timeline`;
-  const data = await httpsGet(url, { 'X-Riot-Token': apiKey });
+  const baseUrl = `https://${region}.api.riotgames.com/lol/match/v5/matches/${matchId}`;
+  const timelineUrl = `${baseUrl}/timeline`;
+
+  const [timelineData, matchData] = await Promise.all([
+    httpsGet(timelineUrl, headers),
+    // Match payload has richer participant metadata. Keep timeline usable even if this fails.
+    httpsGet(baseUrl, headers).catch(() => null),
+  ]);
+
+  const rawParticipants = matchData?.info?.participants || timelineData?.info?.participants || [];
+  const participants = rawParticipants.map((p, i) => {
+    const participantId = Number.isInteger(p.participantId) ? p.participantId : (i + 1);
+    const index = Number.isInteger(p.participantId) ? (p.participantId - 1) : i;
+    return {
+      index,
+      participantId,
+      championName: p.championName || '',
+      summonerName: getDisplayName(p),
+      kills: parseInt(p.kills, 10) || 0,
+      deaths: parseInt(p.deaths, 10) || 0,
+      assists: parseInt(p.assists, 10) || 0,
+    };
+  }).sort((a, b) => a.index - b.index);
+
+  const participantById = {};
+  participants.forEach(p => {
+    participantById[p.participantId] = p;
+  });
 
   const events = [];
-  const frames = data?.info?.frames || [];
+  const frames = timelineData?.info?.frames || [];
   for (const frame of frames) {
     for (const ev of (frame.events || [])) {
-      if (ev.type === 'CHAMPION_KILL') {
-        events.push({
-          type:         'kill',
-          timeS:        Math.round(ev.timestamp / 1000),
-          killerId:     ev.killerId,
-          victimId:     ev.victimId,
-          assistCount:  (ev.assistingParticipantIds || []).length,
-        });
-      }
+      if (ev.type !== 'CHAMPION_KILL') continue;
+      const killer = participantById[ev.killerId];
+      const victim = participantById[ev.victimId];
+      events.push({
+        type: 'kill',
+        timeS: Math.round(ev.timestamp / 1000),
+        killerId: ev.killerId,
+        victimId: ev.victimId,
+        assistCount: (ev.assistingParticipantIds || []).length,
+        killerIdx: killer?.index ?? -1,
+        victimIdx: victim?.index ?? -1,
+        killer: killer?.summonerName || '',
+        victim: victim?.summonerName || '',
+        killerChampion: killer?.championName || '',
+        victimChampion: victim?.championName || '',
+      });
     }
   }
 
-  // Attach participant index map (participantId 1-10 → array index 0-9)
-  const participants = data?.info?.participants || [];
-  const participantMap = {};
-  participants.forEach((p, i) => { participantMap[p.participantId] = i; });
-
-  // Annotate events with participant indices for kill scoring
-  for (const ev of events) {
-    ev.killerIdx = participantMap[ev.killerId] ?? -1;
-    ev.victimIdx = participantMap[ev.victimId] ?? -1;
-  }
-
-  return { events, matchId };
+  return { events, matchId, participants };
 }
 
 module.exports = { fetchMatchKillEvents };

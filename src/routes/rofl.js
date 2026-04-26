@@ -30,7 +30,10 @@ router.post('/parse', upload.single('rofl'), async (req, res) => {
     if (config.RIOT_API_KEY && result.matchId) {
       try {
         const basename = path.basename(req.file.originalname, '.rofl');
-        const { events: riotEvents } = await fetchMatchKillEvents(basename);
+        const { events: riotEvents, participants: riotParticipants } = await fetchMatchKillEvents(basename);
+        if (Array.isArray(riotParticipants) && riotParticipants.length > 0) {
+          result.riotParticipants = riotParticipants;
+        }
         if (riotEvents.length > 0) {
           result.events = riotEvents;
           result.eventsFound = true;
